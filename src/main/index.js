@@ -12,6 +12,11 @@ import { join, extname } from 'path';
 import { promises as fs } from 'fs';
 import { registerIpc } from './ipc.js';
 
+// Commits quemados en build-time por electron.vite.config.mjs.
+// En dev (npm run dev) el bundler también los sustituye, así que el valor
+// siempre refleja el árbol git en el momento en que se construyó.
+const CHANGELOG = typeof __CHANGELOG__ !== 'undefined' ? __CHANGELOG__ : [];
+
 const MAX_WALLPAPER_BYTES = 8 * 1024 * 1024; // 8 MB
 const IMAGE_MIME = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif',
@@ -22,6 +27,26 @@ const isDev = !app.isPackaged;
 
 let mainWindow = null;
 let ipcHandle = null;
+
+/**
+ * Muestra el diálogo "Acerca de" con la versión y el historial de commits
+ * quemado en build-time. Funciona en todas las plataformas.
+ */
+function showAbout(win) {
+  const version = app.getVersion();
+  const changeDetail = CHANGELOG.length
+    ? CHANGELOG.map((c) => `• ${c.msg}  [${c.hash}]  ${c.date}`).join('\n')
+    : '(historial no disponible — build sin git)';
+
+  dialog.showMessageBox(win, {
+    type: 'info',
+    title: 'Acerca de YUSEPE Bento',
+    message: `YUSEPE Bento`,
+    detail: `Versión ${version}\n\nCambios recientes:\n\n${changeDetail}`,
+    buttons: ['Cerrar'],
+    noLink: true,
+  });
+}
 
 /** Menu con accelerators globales para atajos de teclado. */
 function setupMenu(win) {
@@ -40,7 +65,9 @@ function setupMenu(win) {
     ...(isMac ? [{
       label: app.name,
       submenu: [
-        { role: 'about' },
+        // Reemplazamos role:'about' con handler propio para mostrar el
+        // changelog quemado en build-time en vez del diálogo genérico del SO.
+        { label: `Acerca de ${app.name}`, click: () => showAbout(win) },
         { type: 'separator' },
         { role: 'services' },
         { type: 'separator' },
@@ -115,6 +142,14 @@ function setupMenu(win) {
         { role: 'togglefullscreen' },
       ],
     },
+    // En Windows/Linux el primer menú de la barra es "Tile", no hay menú
+    // de app. Agregamos "Acerca de" al final como entrada propia.
+    ...(!isMac ? [{
+      label: 'Acerca de',
+      submenu: [
+        { label: `YUSEPE Bento v${app.getVersion()}`, click: () => showAbout(win) },
+      ],
+    }] : []),
   ];
 
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));

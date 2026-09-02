@@ -39,3 +39,12 @@ build/Release
 *.dmg
 *.exe
 *.AppImage
+
+# Trabajo local — este repo es personal: solo se sube lo autorizado.
+# Se preserva spec/constitution/ (roadmap, mission, tech-stack) y spec/README.md.
+spec/features/
+CLAUDE.md
+tasks.md
+
+# Estado local del loop multiagente
+.ybento/

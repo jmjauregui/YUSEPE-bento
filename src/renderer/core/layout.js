@@ -307,10 +307,10 @@ export function findNeighbor(tiles, tileId, dir) {
 
 /**
  * Mueve `tileId` a la celda (`desiredCol`,`desiredRow`) — su tamaño no
- * cambia. Cualquier otro tile que quede tapado se reacomoda en el
- * primer hueco libre disponible (buscando primero cerca de su propia
- * fila, para no saltar innecesariamente a la esquina superior).
- * Muta los tiles en el lugar; no devuelve nada.
+ * cambia. Cualquier otro tile que quede tapado intenta primero el lugar
+ * de ORIGEN del tile movido (swap, que es lo que uno espera al soltar
+ * A sobre B) y recién si no cabe ahí busca el primer hueco libre
+ * cercano a su propia fila. Muta los tiles en el lugar; no devuelve nada.
  */
 export function moveTileTo(tiles, tileId, desiredCol, desiredRow, gridCols = GRID_COLS) {
   const tile = tiles.find((t) => t.id === tileId);
@@ -321,13 +321,25 @@ export function moveTileTo(tiles, tileId, desiredCol, desiredRow, gridCols = GRI
   const col = Math.max(1, Math.min(desiredCol, gridCols - cs + 1));
   const row = Math.max(1, desiredRow);
 
+  const originCol = tile.col || 1;
+  const originRow = tile.row || 1;
+
   tile.col = col;
   tile.row = row;
 
+  // TODOS los tiles cuentan como ocupados desde el arranque, no solo los
+  // ya procesados: si un desplazado pudiera caer sobre uno todavía no
+  // visitado, ese saldría despedido en cascada — que era exactamente el
+  // tile que "saltaba de lo visible y quedaba muy abajo". Al procesar
+  // cada uno se liberan sus propias celdas y se registran las nuevas.
+  const cellsOf = (c0, r0, cSpan, rSpan, fn) => {
+    for (let r = r0; r < r0 + rSpan; r++)
+      for (let c = c0; c < c0 + cSpan; c++)
+        fn(`${c},${r}`);
+  };
+
   const occupied = new Set();
-  for (let r = row; r < row + rs; r++)
-    for (let c = col; c < col + cs; c++)
-      occupied.add(`${c},${r}`);
+  cellsOf(col, row, cs, rs, (k) => occupied.add(k));
 
   const others = tiles
     .filter((t) => t.id !== tileId)
@@ -338,22 +350,48 @@ export function moveTileTo(tiles, tileId, desiredCol, desiredRow, gridCols = GRI
       return (a.col || 1) - (b.col || 1);
     });
 
+  for (const o of others) {
+    cellsOf(o.col || 1, o.row || 1, o.colSpan || 1, o.rowSpan || 1, (k) => occupied.add(k));
+  }
+
+  const fitsAt = (c0, r0, cSpan, rSpan) => {
+    if (c0 < 1 || c0 + cSpan - 1 > gridCols || r0 < 1) return false;
+    for (let r = r0; r < r0 + rSpan; r++)
+      for (let c = c0; c < c0 + cSpan; c++)
+        if (occupied.has(`${c},${r}`)) return false;
+    return true;
+  };
+
   for (const other of others) {
     const oCS = other.colSpan || 1;
     const oRS = other.rowSpan || 1;
     const oC = other.col || 1;
     const oR = other.row || 1;
 
-    let fitsInPlace = true;
-    for (let r = oR; r < oR + oRS && fitsInPlace; r++)
-      for (let c = oC; c < oC + oCS && fitsInPlace; c++)
-        if (occupied.has(`${c},${r}`)) fitsInPlace = false;
+    // Libera sus propias celdas antes de decidir: su lugar actual no
+    // puede estorbarse a sí mismo. Ojo: si el tile movido tapa parte de
+    // estas celdas, volver a marcarlas lo haría "flotar" — por eso el
+    // tile movido re-marca las suyas al final de cada vuelta.
+    cellsOf(oC, oR, oCS, oRS, (k) => occupied.delete(k));
+    cellsOf(col, row, cs, rs, (k) => occupied.add(k));
 
-    const pos = fitsInPlace ? { col: oC, row: oR } : findEmptySpot(oCS, oRS, occupied, gridCols, oR);
+    let pos;
+    if (fitsAt(oC, oR, oCS, oRS)) {
+      pos = { col: oC, row: oR };
+    } else {
+      // Entre el primer hueco libre y el ORIGEN que dejó vacío el tile
+      // movido, gana el más cercano a la fila actual del desplazado. El
+      // hueco cercano sigue teniendo prioridad cuando existe (no saltar
+      // de fila porque sí), pero si lo único libre queda lejos, el
+      // desplazado hace swap con el origen en vez de terminar "muy abajo".
+      const near = findEmptySpot(oCS, oRS, occupied, gridCols, oR);
+      const originWins = fitsAt(originCol, originRow, oCS, oRS)
+        && Math.abs(originRow - oR) < Math.abs(near.row - oR);
+      pos = originWins ? { col: originCol, row: originRow } : near;
+    }
+
     other.col = pos.col;
     other.row = pos.row;
-    for (let r = pos.row; r < pos.row + oRS; r++)
-      for (let c = pos.col; c < pos.col + oCS; c++)
-        occupied.add(`${c},${r}`);
+    cellsOf(pos.col, pos.row, oCS, oRS, (k) => occupied.add(k));
   }
 }

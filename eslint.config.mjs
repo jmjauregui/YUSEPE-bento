@@ -31,7 +31,11 @@ export default [
       '*.config.{js,mjs,cjs}',
     ],
     languageOptions: {
-      globals: { ...globals.node },
+      globals: {
+        ...globals.node,
+        // Constantes quemadas en build-time por electron.vite.config.mjs via `define`.
+        __CHANGELOG__: 'readonly',
+      },
     },
   },
 

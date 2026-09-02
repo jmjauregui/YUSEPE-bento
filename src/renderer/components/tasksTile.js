@@ -1,18 +1,12 @@
 /**
  * src/renderer/components/tasksTile.js
  * --------------------------------------------------------------
- * Tile de Tareas: la lista de pendientes del workspace, viviendo en el
- * mosaico junto a las terminales.
+ * Tile de Tareas: lista de pendientes del workspace con navegación
+ * interna en dos pantallas (lista → detalle) con animación de
+ * deslizamiento. No usa modales globales; todo ocurre dentro del tile.
  *
  * Las tareas NO se guardan en el perfil: son archivos `.md` reales en
- * `.ybento/tasks/` dentro del proyecto (ver src/main/tasksOps.js). O sea
- * que el disco es la fuente de verdad — se pueden editar a mano, se
- * versionan con git, y dos tiles de tareas del mismo workspace muestran
- * lo mismo.
- *
- * Por eso el tile relee después de cada operación en vez de mantener su
- * propio estado en memoria: es una lista corta, la lectura es barata, y
- * así nunca miente respecto del disco.
+ * `.ybento/tasks/` dentro del proyecto (ver src/main/tasksOps.js).
  * --------------------------------------------------------------
  */
 import { h } from '../utils/dom.js';
@@ -20,12 +14,52 @@ import { svgIcon } from '../utils/icons.js';
 import { state } from '../core/state.js';
 import { bus } from '../core/eventBus.js';
 import { toast } from './toast.js';
-import { openTaskDetail } from './taskDetailModal.js';
 import { openLaunchTemplate } from './launchTemplateModal.js';
+import { renderTextInto } from './fileViewer.js';
 
 export function createTasksTile(tile) {
-  const listEl = h('div', { class: 'flex-1 min-h-0 overflow-y-auto px-1.5 pb-2' });
+  // ── Estado de vista ────────────────────────────────────────────────
+  let currentTask = null;
+
+  // ── Header (siempre visible, doble como handle de arrastre) ───────
+  const titleEl = h('span', {
+    class: 'flex-1 min-w-0 truncate text-fg-muted',
+  }, 'Tareas');
+
   const countEl = h('span', { class: 'text-[10px] text-fg-subtle shrink-0' }, '');
+
+  const backBtn = h('button', {
+    class: 'hidden inline-flex items-center justify-center rounded p-1 shrink-0 text-fg-muted hover:text-fg hover:bg-bg-elev transition',
+    title: 'Volver a la lista',
+    onClick: () => showList(),
+  }, svgIcon('chevron-left', { size: 15 }));
+
+  const iconEl = svgIcon('tasks', { size: 13 });
+
+  const settingsBtn = h('button', {
+    class: 'inline-flex items-center justify-center rounded p-1 shrink-0 text-fg-muted hover:text-fg hover:bg-bg-elev transition',
+    title: 'Editar la plantilla del launchText',
+    onClick: () => openLaunchTemplate(cwd(), () => {}),
+  }, svgIcon('settings', { size: 13 }));
+
+  const refreshBtn = h('button', {
+    class: 'inline-flex items-center justify-center rounded p-1 shrink-0 text-fg-muted hover:text-fg hover:bg-bg-elev transition',
+    title: 'Recargar desde disco',
+    onClick: () => load(),
+  }, svgIcon('refresh', { size: 13 }));
+
+  const saveBtn = h('button', {
+    class: 'hidden inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-md bg-accent hover:bg-accent-soft text-white transition shrink-0',
+    title: 'Guardar (Ctrl+S)',
+    onClick: () => saveDetail(),
+  }, [svgIcon('save', { size: 12 }), h('span', {}, 'Guardar')]);
+
+  const header = h('div', {
+    class: 'flex items-center gap-1.5 pl-7 pr-1 py-1 border-b border-line shrink-0 text-xs',
+  }, [backBtn, iconEl, titleEl, countEl, settingsBtn, refreshBtn, saveBtn]);
+
+  // ── Pantalla 1: Lista ──────────────────────────────────────────────
+  const listEl = h('div', { class: 'flex-1 min-h-0 overflow-y-auto px-1.5 pb-2' });
 
   const input = h('input', {
     type: 'text',
@@ -33,55 +67,180 @@ export function createTasksTile(tile) {
     class: 'w-full bg-bg-elev border border-line rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-accent',
   });
 
-  const header = h('div', {
-    class: 'flex items-center gap-1.5 pl-7 pr-1 py-1 border-b border-line shrink-0 text-xs',
+  // w-1/2 sobre un track de width:200% = 100% del contenedor visible
+  const listScreen = h('div', {
+    class: 'flex flex-col h-full w-1/2 shrink-0',
   }, [
-    svgIcon('tasks', { size: 13 }),
-    h('span', { class: 'flex-1 min-w-0 truncate text-fg-muted' }, 'Tareas'),
-    countEl,
-    h('button', {
-      class: 'inline-flex items-center justify-center rounded p-1 shrink-0 text-fg-muted hover:text-fg hover:bg-bg-elev transition',
-      title: 'Editar la plantilla del launchText',
-      onClick: () => openLaunchTemplate(cwd(), () => {}),
-    }, svgIcon('settings', { size: 13 })),
-    h('button', {
-      class: 'inline-flex items-center justify-center rounded p-1 shrink-0 text-fg-muted hover:text-fg hover:bg-bg-elev transition',
-      title: 'Recargar desde disco',
-      onClick: () => load(),
-    }, svgIcon('refresh', { size: 13 })),
+    h('div', { class: 'px-1.5 py-1.5 shrink-0' }, [input]),
+    listEl,
   ]);
 
-  // La raíz lleva class 'tile' + dataset.tileId como toda factoría de tiles
-  // (ver el contrato en tile.js): sin eso no hay fondo ni handles de mover.
+  // ── Pantalla 2: Detalle ────────────────────────────────────────────
+  const titleInput = h('input', {
+    type: 'text',
+    class: 'w-full bg-bg-elev border border-line rounded-md px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-accent shrink-0',
+    placeholder: 'Título de la tarea',
+    spellcheck: false,
+  });
+
+  const notesInput = h('textarea', {
+    class: 'flex-1 min-h-0 w-full bg-bg-elev border border-line rounded-md p-3 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-accent resize-none',
+    placeholder: 'Descripción de la tarea. Acepta Markdown.\n\nEs el cuerpo del .md, así que también podés editarlo fuera de Bento.',
+    spellcheck: false,
+  });
+
+  const previewDiv = h('div', {
+    class: 'hidden flex-1 min-h-0 overflow-auto border border-line rounded-md p-3 text-sm',
+  });
+
+  let previewing = false;
+
+  const previewBtn = h('button', {
+    class: 'inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-md border border-line hover:bg-bg-elev transition shrink-0',
+    onClick: () => {
+      previewing = !previewing;
+      notesInput.classList.toggle('hidden', previewing);
+      previewDiv.classList.toggle('hidden', !previewing);
+      previewBtn.querySelector('span').textContent = previewing ? 'Editar' : 'Vista previa';
+      if (previewing) {
+        renderTextInto(previewDiv, { name: 'task.md', raw: notesInput.value || '_(sin descripción)_' });
+      }
+    },
+  }, [svgIcon('file', { size: 12 }), h('span', {}, 'Vista previa')]);
+
+  const relPathEl = h('span', { class: 'text-[10px] text-fg-subtle truncate max-w-[60%]' });
+
+  const detailScreen = h('div', {
+    class: 'flex flex-col h-full w-1/2 shrink-0 px-2 pt-2 pb-2 gap-2',
+  }, [
+    titleInput,
+    h('div', { class: 'flex items-center gap-1.5 shrink-0' }, [previewBtn, h('span', { class: 'flex-1' }), relPathEl]),
+    notesInput,
+    previewDiv,
+  ]);
+
+  // ── Slide track ────────────────────────────────────────────────────
+  // El track mide 200% del contenedor y se desplaza con translateX(-50%)
+  // para revelar la pantalla de detalle. La transición es CSS puro.
+  const slideTrack = h('div', {
+    class: 'flex h-full',
+    style: 'width: 200%; transition: transform 220ms cubic-bezier(0.4, 0, 0.2, 1); will-change: transform;',
+  }, [listScreen, detailScreen]);
+
+  // ── Raíz del tile ──────────────────────────────────────────────────
   const el = h('div', {
     class: 'tile',
     dataset: { tileId: tile.id, kind: 'tasks' },
   }, [
     h('div', { class: 'flex flex-col h-full' }, [
       header,
-      h('div', { class: 'px-1.5 py-1.5 shrink-0' }, [input]),
-      listEl,
+      h('div', { class: 'flex-1 min-h-0 overflow-hidden relative' }, [slideTrack]),
     ]),
   ]);
 
   const cwd = () => state.profile?.cwd || null;
 
+  // ── Transiciones de pantalla ───────────────────────────────────────
+  function showList({ skipLoad = false } = {}) {
+    currentTask = null;
+    // Header: volver al estado de lista
+    backBtn.classList.add('hidden');
+    iconEl.classList.remove('hidden');
+    settingsBtn.classList.remove('hidden');
+    refreshBtn.classList.remove('hidden');
+    saveBtn.classList.add('hidden');
+    countEl.classList.remove('hidden');
+    titleEl.textContent = 'Tareas';
+    // Slide hacia la izquierda → muestra la lista
+    slideTrack.style.transform = 'translateX(0)';
+    // Resetear estado del detalle
+    previewing = false;
+    notesInput.classList.remove('hidden');
+    previewDiv.classList.add('hidden');
+    if (previewBtn.querySelector('span')) previewBtn.querySelector('span').textContent = 'Vista previa';
+    if (!skipLoad) load();
+  }
+
+  function showDetail(task) {
+    currentTask = task;
+    // Poblar el formulario
+    titleInput.value = task.title;
+    notesInput.value = task.notes || '';
+    relPathEl.textContent = task.relPath;
+    relPathEl.title = task.relPath;
+    // Resetear vista previa
+    previewing = false;
+    notesInput.classList.remove('hidden');
+    previewDiv.classList.add('hidden');
+    if (previewBtn.querySelector('span')) previewBtn.querySelector('span').textContent = 'Vista previa';
+    // Header: modo detalle (título de la tarea)
+    titleEl.textContent = task.title;
+    backBtn.classList.remove('hidden');
+    iconEl.classList.add('hidden');
+    settingsBtn.classList.add('hidden');
+    refreshBtn.classList.add('hidden');
+    saveBtn.classList.remove('hidden');
+    countEl.classList.add('hidden');
+    // Slide hacia el detalle (–50% del track de 200% = –100% del contenedor)
+    slideTrack.style.transform = 'translateX(-50%)';
+    // Foco al textarea tras la animación
+    setTimeout(() => notesInput.focus(), 230);
+  }
+
+  // ── Guardar detalle ────────────────────────────────────────────────
+  async function saveDetail() {
+    if (!currentTask) return;
+    const title = titleInput.value.trim();
+    if (!title) {
+      titleInput.focus();
+      return toast.error('La tarea necesita un título');
+    }
+    try {
+      await window.yusepe.tasks.update(cwd(), currentTask.id, {
+        title,
+        notes: notesInput.value,
+      });
+      toast.success('Tarea guardada');
+      await refreshAndNotify();
+      showList({ skipLoad: true });
+    } catch (err) {
+      toast.error(err?.message || String(err));
+    }
+  }
+
+  // Atajos de teclado en el detalle
+  for (const field of [titleInput, notesInput]) {
+    field.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+        e.preventDefault();
+        saveDetail();
+      }
+      // Escape vuelve a la lista (solo si no está en modo previa, donde
+      // sería más intuitivo cerrar la previa primero)
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        if (!previewing) showList();
+      }
+    });
+  }
+  // En el campo título, Enter guarda
+  titleInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); saveDetail(); }
+  });
+
+  // ── Renderizado de la lista ────────────────────────────────────────
   function renderEmpty(msg) {
     listEl.innerHTML = '';
     listEl.append(h('p', { class: 'text-fg-subtle text-xs px-1.5 py-3 text-center' }, msg));
   }
 
   function renderTask(task) {
-    // Caja de check dibujada a mano (no <input type=checkbox>) para que
-    // siga el tema de la app en vez del control nativo del SO.
     const box = h('span', {
       class: 'w-3.5 h-3.5 rounded-[4px] border shrink-0 grid place-items-center transition ' +
         (task.done ? 'bg-accent border-accent text-white' : 'border-line text-transparent'),
     }, svgIcon('check', { size: 9 }));
 
-    // Dos acciones distintas en la misma fila: el check completa, el título
-    // abre el detalle. Van en elementos separados (y no en la fila entera)
-    // para que no se pisen — el área de click de cada uno es su propio botón.
     const checkBtn = h('button', {
       class: 'shrink-0 pt-0.5 rounded',
       title: task.done ? 'Marcar como pendiente' : 'Marcar como hecha',
@@ -92,11 +251,9 @@ export function createTasksTile(tile) {
       class: 'flex-1 min-w-0 text-left text-xs leading-snug break-words ' +
         (task.done ? 'line-through text-fg-subtle' : 'text-fg'),
       title: 'Abrir detalle',
-      onClick: () => openTaskDetail(task, cwd(), refreshAndNotify),
+      onClick: () => showDetail(task),
     }, [
       h('span', {}, task.title),
-      // Señal de que la tarea tiene descripción: si no, no hay forma de
-      // saber cuáles tienen contenido sin abrirlas una por una.
       task.notes
         ? h('span', { class: 'ml-1.5 align-middle inline-flex text-fg-subtle', title: 'Tiene descripción' },
           svgIcon('file', { size: 10 }))
@@ -122,22 +279,16 @@ export function createTasksTile(tile) {
     ]);
   }
 
-  // La vigilancia sólo se puede armar si `.ybento/tasks` ya existe, y no la
-  // creamos sólo por mirar. Así que se reintenta después de cada load: en
-  // cuanto haya una primera tarea, queda armada.
   let watching = false;
   let watchPending = false;
   async function ensureWatching() {
     const root = cwd();
-    // `watchPending` evita que dos load() seguidos pidan la vigilancia dos
-    // veces: en el main se cuentan referencias, y un alta de más quedaría
-    // sin su baja.
     if (watching || watchPending || !root) return;
     watchPending = true;
     try {
       watching = await window.yusepe.tasks.watch(root);
     } catch {
-      /* si no se puede vigilar, queda el botón de recargar a mano */
+      /* sin vigilancia, queda el botón de recargar a mano */
     } finally {
       watchPending = false;
     }
@@ -170,13 +321,11 @@ export function createTasksTile(tile) {
     for (const task of tasks) listEl.append(renderTask(task));
   }
 
-  /** Relee del disco y avisa a los otros tiles de tareas del workspace. */
   async function refreshAndNotify() {
     await load();
     bus.emit('tasks:changed', { tileId: tile.id });
   }
 
-  /** Corre una operación de escritura y refresca. */
   async function mutate(fn) {
     try {
       await fn();
@@ -201,11 +350,6 @@ export function createTasksTile(tile) {
     return mutate(() => window.yusepe.tasks.remove(cwd(), task.id));
   }
 
-  /**
-   * Arma el launchText de la tarea con la plantilla del workspace y lo deja
-   * en el portapapeles, listo para pegárselo al agente de código.
-   * No pasa por mutate(): no escribe nada, así que no hay que releer.
-   */
   async function copyLaunchText(task) {
     try {
       const text = await window.yusepe.tasks.launchText(cwd(), task.id);
@@ -217,7 +361,7 @@ export function createTasksTile(tile) {
   }
 
   input.addEventListener('keydown', (e) => {
-    e.stopPropagation(); // que los atajos globales no se coman el tipeo
+    e.stopPropagation();
     if (e.key === 'Enter') {
       e.preventDefault();
       const title = input.value.trim();
@@ -230,14 +374,10 @@ export function createTasksTile(tile) {
 
   load();
 
-  // Otro tile de tareas del mismo workspace tocó el disco: este quedó viejo.
-  // El que hizo el cambio ya releyó, así que se saltea a sí mismo.
   const offChanged = bus.on('tasks:changed', (payload) => {
     if (payload?.tileId !== tile.id) load();
   });
 
-  // Los .md cambiaron por fuera de Bento — típicamente el agente marcando la
-  // tarea como hecha al terminarla, o el usuario editándolos a mano.
   const offDisk = window.yusepe.tasks.onChangedOnDisk(({ cwd: changed }) => {
     if (changed === cwd()) load();
   });

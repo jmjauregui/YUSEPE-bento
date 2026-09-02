@@ -8,6 +8,7 @@
  * --------------------------------------------------------------
  */
 import { BrowserWindow, clipboard, ipcMain, Menu, shell } from 'electron';
+import { statSync } from 'fs';
 import { join, resolve } from 'path';
 import { ProfileStorage } from './storage.js';
 import { detectTools } from './toolDetector.js';
@@ -19,7 +20,9 @@ import * as pexelsOps from './pexelsOps.js';
 import * as loopOps from './loopOps.js';
 import { createDispatcher, looksLikeShell } from './loopDispatcher.js';
 import { buildPtyEnv, ensureShim } from './loopShim.js';
+import { createWriteQueue } from './ptyWriteQueue.js';
 import { SnippetsStore } from './snippetsOps.js';
+import * as diag from './loopDiag.js';
 
 // Carga pty de forma perezosa: si falla (p.ej. sin recompilar)
 // no rompemos el arranque de la app.
@@ -249,11 +252,24 @@ export function registerIpc({ app, profilesDir }) {
       root: agent ? (loopRoot || cwd || null) : null,
     });
 
+    // El `cwd` guardado en el perfil puede no existir en esta máquina
+    // (carpeta movida/borrada, workspace importado de otra máquina). En
+    // Windows, ConPTY falla con "error code: 267" (ERROR_DIRECTORY) y la
+    // terminal muere antes de nacer; mejor caer al home y avisar.
+    let useCwd = cwd || app.getPath('home');
+    let cwdMissing = null;
+    try {
+      if (!statSync(useCwd).isDirectory()) throw new Error('no es un directorio');
+    } catch {
+      cwdMissing = useCwd;
+      useCwd = app.getPath('home');
+    }
+
     const proc = lib.spawn(useShell, shellArgs, {
       name: 'xterm-256color',
       cols: cols || 80,
       rows: rows || 24,
-      cwd: cwd || app.getPath('home'),
+      cwd: useCwd,
       env,
     });
 
@@ -270,19 +286,25 @@ export function registerIpc({ app, profilesDir }) {
       if (!event.sender.isDestroyed()) {
         event.sender.send(`pty:exit:${ptyId}`, exitCode);
       }
+      ptys.get(ptyId)?.writer.dispose();
       ptys.delete(ptyId);
     });
+
+    // Todo lo que se escribe al pty pasa por la cola: ConPTY (Windows)
+    // pierde input ante escrituras grandes de golpe — de un pegado largo
+    // sobrevive sólo la cola. Ver ptyWriteQueue.js.
+    const writer = createWriteQueue((data) => { proc.write(data); diag.chunk(ptyId, data); });
 
     // `shell` se guarda para la sonda de presencia del loop: sirve para
     // saber si el proceso en primer plano volvió a ser el shell, o sea que
     // el agente que corría ahí ya terminó. Ver loopDispatcher.js.
-    ptys.set(ptyId, { proc, senderId: event.sender.id, shell: useShell });
-    return { ptyId, shell: useShell };
+    ptys.set(ptyId, { proc, writer, senderId: event.sender.id, shell: useShell });
+    return { ptyId, shell: useShell, cwdMissing };
   });
 
   ipcMain.on('pty:input', (_e, { ptyId, data }) => {
     const entry = ptys.get(ptyId);
-    if (entry) entry.proc.write(data);
+    if (entry) entry.writer.write(data);
   });
 
   ipcMain.on('pty:resize', (_e, { ptyId, cols, rows }) => {
@@ -299,6 +321,7 @@ export function registerIpc({ app, profilesDir }) {
   ipcMain.on('pty:kill', (_e, { ptyId }) => {
     const entry = ptys.get(ptyId);
     if (entry) {
+      entry.writer.dispose();
       try { entry.proc.kill(); } catch { /* noop */ }
       ptys.delete(ptyId);
     }
@@ -317,9 +340,15 @@ export function registerIpc({ app, profilesDir }) {
   };
 
   const dispatcher = createDispatcher({
+    // Por la misma cola que el resto: el orden FIFO por pty garantiza que
+    // el `\r` que el dispatcher manda aparte salga después del mensaje.
     writeToPty: (ptyId, data) => {
       const entry = ptys.get(ptyId);
-      if (entry) entry.proc.write(data);
+      if (entry) entry.writer.write(data);
+    },
+    whenIdleForPty: (ptyId) => {
+      const entry = ptys.get(ptyId);
+      return entry ? entry.writer.whenIdle() : Promise.resolve();
     },
     // `proc.process` es el proceso en primer plano del pty: `claude` o
     // `node` mientras el agente vive, y el shell cuando ya salió.
@@ -334,7 +363,7 @@ export function registerIpc({ app, profilesDir }) {
 
   ipcMain.handle('loop:agents', (_e, { cwd }) => loopOps.listAgents(cwd));
   // Presencia: viva sólo en memoria, como el binding nombre->pty.
-  ipcMain.handle('loop:presence', () => dispatcher.presence());
+  ipcMain.handle('loop:presence', (_e, { cwd } = {}) => dispatcher.presence(cwd));
   // ¿Esa terminal está en el prompt del shell? Se consulta antes de
   // tipearle un `export`: si adentro hay un agente corriendo, ese texto le
   // entraría como si fuera un mensaje del usuario.
@@ -346,7 +375,7 @@ export function registerIpc({ app, profilesDir }) {
   ipcMain.handle('loop:register', (_e, { cwd, name, role, tileId, color }) =>
     loopOps.registerAgent(cwd, { name, role, tileId, color }));
   ipcMain.handle('loop:unregister', (_e, { cwd, name }) => {
-    dispatcher.unbind(name);
+    dispatcher.unbind(name, cwd);
     return loopOps.unregisterAgent(cwd, name);
   });
   ipcMain.handle('loop:set-state', (_e, { cwd, name, state }) =>
@@ -364,12 +393,12 @@ export function registerIpc({ app, profilesDir }) {
 
   // Asocia un agente con la terminal donde corre. Es efímero a propósito
   // (ver la cabecera de loopDispatcher.js): el ptyId muere con la terminal.
-  ipcMain.handle('loop:bind', (_e, { name, ptyId }) => {
-    dispatcher.bind(name, ptyId);
+  ipcMain.handle('loop:bind', (_e, { name, ptyId, cwd }) => {
+    dispatcher.bind(name, ptyId, cwd);
     return true;
   });
-  ipcMain.handle('loop:unbind', (_e, { name }) => {
-    dispatcher.unbind(name);
+  ipcMain.handle('loop:unbind', (_e, { name, cwd }) => {
+    dispatcher.unbind(name, cwd);
     return true;
   });
 
@@ -378,8 +407,8 @@ export function registerIpc({ app, profilesDir }) {
     dispatcher.start(cwd);
     return true;
   });
-  ipcMain.handle('loop:stop', () => {
-    dispatcher.stop();
+  ipcMain.handle('loop:stop', (_e, { cwd } = {}) => {
+    dispatcher.stop(cwd || undefined);
     return true;
   });
 

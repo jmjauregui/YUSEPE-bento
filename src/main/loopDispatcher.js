@@ -29,6 +29,7 @@ import {
   crossedMessages, formatForTerminal, listMessages, markDelivered,
   normalizeName, pendingDeliveries, readHead, watchLoop,
 } from './loopOps.js';
+import * as diag from './loopDiag.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -58,6 +59,17 @@ const DEBOUNCE_MS = 120;
  * loop tarda minutos) mientras que quedarse corto rompe la autonomía.
  */
 const SUBMIT_DELAY_MS = 250;
+
+/**
+ * Tope máximo para esperar el drenaje de la cola antes de continuar.
+ *
+ * El mensaje más largo observado en campo tiene 13 384 chars:
+ *   (ceil(13 384 / 50) − 1) × 5 ms ≈ 1 335 ms de drenaje.
+ * 5 000 ms triplica ese máximo; si se supera en un loop real, algo en el
+ * pty está mal (proceso muerto sin cerrar la cola, por ejemplo) y esperar
+ * más sólo bloquearía el reparto entero del workspace para siempre.
+ */
+const IDLE_TIMEOUT_MS = 5_000;
 
 /** Shells que, si están en primer plano, significan "acá no hay agente". */
 const SHELL_NAMES = new Set([
@@ -95,69 +107,88 @@ export function looksLikeShell({ process: foreground, shell } = {}) {
  */
 export function createDispatcher({
   writeToPty,
+  whenIdleForPty = () => Promise.resolve(),
   probePty = null,
   onDelivered = () => {},
   onChange = () => {},
   onPresence = () => {},
   submitDelayMs = SUBMIT_DELAY_MS,
+  idleTimeoutMs = IDLE_TIMEOUT_MS,
   pollMs = POLL_MS,
   // Los tests que cuentan entregas la apagan: si no, sus propias escrituras
   // disparan vueltas de fondo y el conteo depende del reloj.
   watchFs = true,
 } = {}) {
-  /** nombre de agente -> ptyId (efímero, ver cabecera) */
-  const bindings = new Map();
+  /**
+   * Bindings y presencia indexados por workspace (cwd → Map).
+   *
+   * Antes eran mapas globales compartidos: en modo "loops simultáneos",
+   * si dos workspaces tenían un agente con el mismo nombre, el segundo
+   * `bind` sobreescribía el primero y los mensajes llegaban a la terminal
+   * equivocada. Al indexarlos por cwd cada workspace tiene su propio
+   * espacio de nombres.
+   *
+   * bindingsFor / presenceFor auto-inicializan la entrada: `bind` puede
+   * llamarse antes de `start` (liveTiles monta terminales en el mismo
+   * tick que el IPC de start) sin perder nada.
+   */
+  const allBindings = new Map(); // cwd -> Map<normalizedName, ptyId>
+  const allPresence = new Map(); // cwd -> Map<normalizedName, {present,foreground,checkedAt}>
 
-  /** nombre -> { present, foreground, checkedAt } — efímero, como el binding. */
-  const presence = new Map();
+  function bindingsFor(targetCwd) {
+    if (!allBindings.has(targetCwd)) allBindings.set(targetCwd, new Map());
+    return allBindings.get(targetCwd);
+  }
 
-  let cwd = null;
-  let unwatch = null;
-  let poll = null;
-  let debounce = null;
+  function presenceFor(targetCwd) {
+    if (!allPresence.has(targetCwd)) allPresence.set(targetCwd, new Map());
+    return allPresence.get(targetCwd);
+  }
 
   /**
-   * Las vueltas se encadenan en vez de descartarse.
+   * Estado por workspace vigilado: { poll, unwatch, debounce, chain }.
    *
-   * Antes, una vuelta que llegaba con otra en curso se devolvía vacía. Con
-   * un tick corto casi nunca pasaba; al agregarle una lectura de git la
-   * ventana se ensanchó y empezaron a perderse vueltas. Encolar es lo
-   * correcto igual: "repartí ahora" tiene que repartir, no coincidir con
-   * un hueco libre.
+   * En modo "un loop a la vez" sólo hay una entrada; en modo "loops
+   * simultáneos" puede haber N (una por workspace visitado). Usar un Map
+   * en vez de variables sueltas permite añadir/quitar workspaces sin
+   * tocar los demás ni reinventar la cadena de vueltas de reparto.
    */
-  let chain = Promise.resolve([]);
+  const cwds = new Map();
 
   /**
    * Asocia un agente con la terminal donde está corriendo.
    * Sin binding no se le entrega nada: el mensaje queda en su bandeja.
+   *
+   * @param {string} name
+   * @param {string} ptyId
+   * @param {string} cwd  workspace al que pertenece el agente
    */
-  function bind(name, ptyId) {
-    bindings.set(normalizeName(name), ptyId);
+  function bind(name, ptyId, cwd) {
+    bindingsFor(cwd).set(normalizeName(name), ptyId);
   }
 
-  function unbind(name) {
+  /**
+   * @param {string} name
+   * @param {string} [cwd]  si se omite, quita el agente de todos los workspaces
+   */
+  function unbind(name, cwd) {
     const id = normalizeName(name);
-    bindings.delete(id);
-    presence.delete(id);
+    if (cwd) {
+      bindingsFor(cwd).delete(id);
+      presenceFor(cwd).delete(id);
+    } else {
+      for (const b of allBindings.values()) b.delete(id);
+      for (const p of allPresence.values()) p.delete(id);
+    }
   }
 
   /**
    * ¿Sigue habiendo un agente escuchando en esa terminal?
    *
-   * Sin esto, cuando el proceso del agente termina la terminal vuelve al
-   * prompt, nosotros le pegamos igual, avanzamos el cursor... y el mensaje
-   * queda leído por nadie. Peor: silenciosamente, porque en el panel se ve
-   * entregado.
-   *
-   * El detector es el proceso en primer plano del pty: si es el shell,
-   * significa que el agente ya no está corriendo ahí. Cuando Claude Code u
-   * opencode están vivos, el primer plano es su propio proceso.
-   *
-   * Ante la duda (sin sonda disponible, o el pty no sabe responder) se
-   * asume presente: preferimos entregar de más antes que dejar mudo un
-   * loop que en realidad estaba sano.
+   * Recibe el Map de presencia del workspace concreto para no mezclar
+   * estado de presencia entre workspaces distintos.
    */
-  function checkPresence(name, ptyId) {
+  function checkPresence(name, ptyId, pMap) {
     if (!probePty) return true;
 
     let info = null;
@@ -171,65 +202,103 @@ export function createDispatcher({
     const foreground = shellName(info.process);
     const present = !looksLikeShell(info);
 
-    const previous = presence.get(name);
-    presence.set(name, { present, foreground, checkedAt: new Date().toISOString() });
+    const previous = pMap.get(name);
+    pMap.set(name, { present, foreground, checkedAt: new Date().toISOString() });
     if (!previous || previous.present !== present) {
       onPresence({ agent: name, present, foreground });
     }
     return present;
   }
 
-  /** Estado de presencia conocido, para pintarlo en el panel. */
-  function presenceSnapshot() {
-    return Object.fromEntries(presence);
+  /**
+   * Estado de presencia conocido, para pintarlo en el panel.
+   *
+   * @param {string} [targetCwd]  si se omite, fusiona todos los workspaces
+   */
+  function presenceSnapshot(targetCwd) {
+    if (targetCwd) return Object.fromEntries(presenceFor(targetCwd));
+    const merged = {};
+    for (const p of allPresence.values()) {
+      for (const [k, v] of p) merged[k] = v;
+    }
+    return merged;
   }
 
-  function boundAgents() {
-    return [...bindings.keys()];
+  /** @param {string} [targetCwd]  si se omite, devuelve todos los workspaces */
+  function boundAgents(targetCwd) {
+    if (targetCwd) return [...bindingsFor(targetCwd).keys()];
+    const all = new Set();
+    for (const b of allBindings.values()) for (const k of b.keys()) all.add(k);
+    return [...all];
   }
 
   /**
-   * Una vuelta de reparto. Devuelve lo que entregó — los tests miran esto,
+   * Una vuelta de reparto para un workspace concreto.
+   * Devuelve lo que entregó — los tests miran esto,
    * y la UI lo usa para pintar el mensaje como enviado.
    */
-  async function runTick() {
-    if (!cwd) return [];
+  async function runTickFor(targetCwd) {
+    if (!targetCwd) return [];
 
-    const ready = await pendingDeliveries(cwd);
+    const cwdBindings = bindingsFor(targetCwd);
+    const cwdPresence = presenceFor(targetCwd);
+
+    const ready = await pendingDeliveries(targetCwd);
     const delivered = [];
     // Se lee una vez por vuelta y sólo si hay algo que entregar: hace
     // falta el hilo completo para detectar cruces.
-    const all = ready.length ? await listMessages(cwd) : [];
+    const all = ready.length ? await listMessages(targetCwd) : [];
     // Una lectura de HEAD por vuelta, no por mensaje: sirve para avisar
     // que un reporte describe un árbol que ya avanzó.
-    const head = ready.length ? await readHead(cwd) : null;
+    const head = ready.length ? await readHead(targetCwd) : null;
 
     for (const { agent, messages } of ready) {
-      const ptyId = bindings.get(agent.name);
+      const ptyId = cwdBindings.get(agent.name);
       if (!ptyId) continue; // sin terminal asociada: se queda en la bandeja
 
       // Si el agente ya no está corriendo en esa terminal, NO se entrega
       // y el cursor no avanza: el mensaje sigue pendiente y aparece como
       // tal en el panel. Un mensaje sin leer es recuperable; uno marcado
       // como entregado que nadie leyó, no.
-      if (!checkPresence(agent.name, ptyId)) continue;
+      if (!checkPresence(agent.name, ptyId, cwdPresence)) continue;
 
       // Sólo el más viejo: el resto espera a que vuelva a `waiting`.
       const message = messages[0];
-
-      // Dos escrituras separadas, no una: ver SUBMIT_DELAY_MS. El texto
-      // primero, y el Enter después de que el TUI del agente haya cerrado
-      // su ventana de detección de pegado.
-      writeToPty(ptyId, formatForTerminal(message, {
+      const payload = formatForTerminal(message, {
         crossed: crossedMessages(all, message),
         head,
-      }));
-      if (submitDelayMs > 0) await sleep(submitDelayMs);
-      writeToPty(ptyId, '\r');
+      });
+
+      // Abre la ventana de captura de diagnóstico: guarda B1 y permite
+      // que la envoltura de ipc.js acumule B2 en los chunks de proc.write.
+      // La ventana se cierra en el finally para garantizarlo aunque algo
+      // tire: sin esto la sesión quedaría armada y el tipeo posterior del
+      // usuario se acumularía hasta la próxima entrega (fuga de privacidad).
+      diag.arm(ptyId, { agent: agent.name, cwd: targetCwd, messageId: message.id, payload });
+      let drenajeVencido = false;
+      try {
+        // Dos escrituras separadas, no una: ver SUBMIT_DELAY_MS. El texto
+        // primero, y el Enter después de que el TUI del agente haya cerrado
+        // su ventana de detección de pegado.
+        writeToPty(ptyId, payload);
+        // Espera el drenaje real, con tope de tiempo: si la cola nunca
+        // resuelve (pty muerto sin cerrar la cola), el reparto no se cuelga.
+        drenajeVencido = await Promise.race([
+          whenIdleForPty(ptyId).then(() => false),
+          sleep(idleTimeoutMs).then(() => true),
+        ]);
+        if (submitDelayMs > 0) await sleep(submitDelayMs);
+        writeToPty(ptyId, '\r');
+      } finally {
+        diag.disarm(ptyId);
+      }
 
       // El cursor avanza *después* de escribir: si Bento se cae en el
       // medio, el mensaje se reintenta en vez de perderse.
-      await markDelivered(cwd, agent.name, message.id);
+      await markDelivered(targetCwd, agent.name, message.id);
+      // Vuelca el registro a disco, fire-and-forget: ningún fallo del
+      // diagnóstico se propaga al camino de entrega.
+      diag.flush(ptyId, { drenajeVencido }).catch(() => {});
 
       delivered.push({ agent: agent.name, message });
       onDelivered({ agent: agent.name, message });
@@ -238,73 +307,112 @@ export function createDispatcher({
     return delivered;
   }
 
-  /** Encola una vuelta detrás de la que esté corriendo. */
-  function tick() {
-    chain = chain.then(runTick, runTick);
-    return chain;
+  /** Encola una vuelta para un workspace concreto. */
+  function tickFor(targetCwd) {
+    const state = cwds.get(targetCwd);
+    if (!state) return Promise.resolve([]);
+    state.chain = state.chain.then(
+      () => runTickFor(targetCwd),
+      () => runTickFor(targetCwd),
+    );
+    return state.chain;
   }
 
-  /** Reparte enseguida, agrupando ráfagas de cambios. */
-  function schedule() {
-    if (debounce) clearTimeout(debounce);
-    debounce = setTimeout(() => {
-      debounce = null;
+  /**
+   * Encola una vuelta para TODOS los workspaces vigilados y devuelve
+   * el array combinado. Firma idéntica a la versión anterior: los tests
+   * y la UI siguen usando `dispatcher.tick()` sin cambios.
+   */
+  function tick() {
+    const promises = [...cwds.keys()].map(tickFor);
+    return Promise.all(promises).then((arrays) => arrays.flat());
+  }
+
+  /** Reparte enseguida para un workspace, agrupando ráfagas de cambios. */
+  function scheduleFor(targetCwd) {
+    const state = cwds.get(targetCwd);
+    if (!state) return;
+    if (state.debounce) clearTimeout(state.debounce);
+    state.debounce = setTimeout(() => {
+      state.debounce = null;
       onChange();
-      tick();
+      tickFor(targetCwd);
     }, DEBOUNCE_MS);
   }
 
   /**
-   * Arranca a vigilar el workspace. Idempotente: llamarlo de nuevo con
-   * otro cwd mueve la vigilancia (es lo que pasa al cambiar de perfil).
+   * Arranca a vigilar un workspace. Idempotente: si ya se está vigilando
+   * ese cwd, no hace nada. No detiene otros workspaces activos: en modo
+   * "loops simultáneos" pueden coexistir varios.
+   *
+   * En modo "un loop a la vez", el llamador es responsable de llamar a
+   * `stop(cwdAnterior)` antes de llamar a `start(cwdNuevo)`.
    */
   function start(nextCwd) {
-    stop();
-    cwd = nextCwd;
-    if (!cwd) return;
+    if (!nextCwd || cwds.has(nextCwd)) return; // idempotente
+
+    const state = { poll: null, unwatch: null, debounce: null, chain: Promise.resolve([]) };
+    cwds.set(nextCwd, state);
 
     // `fs.watch` es el camino rápido, pero se pierde eventos según el SO y
     // no existe hasta que exista la carpeta. El intervalo es la red: hace
     // que el loop ande igual, sólo que con hasta POLL_MS de demora.
     if (watchFs) {
       try {
-        unwatch = watchLoop(cwd, schedule);
+        state.unwatch = watchLoop(nextCwd, () => scheduleFor(nextCwd));
       } catch {
-        unwatch = null;
+        state.unwatch = null;
       }
     }
-    poll = setInterval(() => {
+    state.poll = setInterval(() => {
       // Si la carpeta apareció después de arrancar, enganchamos el watch.
-      if (watchFs && !unwatch) {
-        try { unwatch = watchLoop(cwd, schedule); } catch { /* sigue el poll */ }
+      if (watchFs && !state.unwatch) {
+        try { state.unwatch = watchLoop(nextCwd, () => scheduleFor(nextCwd)); } catch { /* sigue el poll */ }
       }
-      tick();
+      // `fs.watch` puede perder eventos en Windows (Explorer, Search Indexer,
+      // antivirus). `onChange` acá garantiza que la sidebar se refresca aunque
+      // watchLoop no haya avisado — mismo intervalo que el tick, sin coste extra.
+      onChange();
+      tickFor(nextCwd);
     }, pollMs);
 
-    if (watchFs) schedule();
+    if (watchFs) scheduleFor(nextCwd);
   }
 
-  function stop() {
-    if (debounce) { clearTimeout(debounce); debounce = null; }
-    if (poll) { clearInterval(poll); poll = null; }
-    if (unwatch) { try { unwatch(); } catch { /* noop */ } unwatch = null; }
-    cwd = null;
+  /**
+   * Detiene la vigilancia de un workspace concreto, o de todos si no se
+   * especifica ninguno.
+   *
+   * @param {string} [targetCwd] — si se omite, detiene todos los workspaces.
+   */
+  function stop(targetCwd) {
+    const toStop = targetCwd ? [targetCwd] : [...cwds.keys()];
+    for (const c of toStop) {
+      const state = cwds.get(c);
+      if (!state) continue;
+      if (state.debounce) { clearTimeout(state.debounce); state.debounce = null; }
+      if (state.poll) { clearInterval(state.poll); state.poll = null; }
+      if (state.unwatch) { try { state.unwatch(); } catch { /* noop */ } state.unwatch = null; }
+      cwds.delete(c);
+    }
   }
 
   /**
    * Corta todo, incluidas las asociaciones (al cerrar la app).
    *
-   * Espera la vuelta que esté en curso: `stop()` sólo cancela los timers,
+   * Espera las vueltas en curso: `stop()` sólo cancela los timers,
    * pero un reparto ya arrancado sigue escribiendo en `.ybento/loop/`
    * después. Sin esperarlo, quien limpie detrás (un test que borra su
    * carpeta temporal, o la app cerrando el workspace) corre contra una
    * escritura a medio hacer.
    */
   async function dispose() {
+    // Recolectar chains ANTES de stop(): stop() vacía el Map.
+    const chains = [...cwds.values()].map((s) => s.chain);
     stop();
-    await chain.catch(() => {});
-    bindings.clear();
-    presence.clear();
+    await Promise.all(chains.map((c) => c.catch(() => {})));
+    allBindings.clear();
+    allPresence.clear();
   }
 
   return {

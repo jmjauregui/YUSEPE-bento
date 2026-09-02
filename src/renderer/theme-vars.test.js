@@ -18,8 +18,11 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
-const here = path.dirname(new URL(import.meta.url).pathname);
+// fileURLToPath y no `.pathname`: en Windows el pathname de un file-URL es
+// `/C:/...`, y unido con path.join da la ruta inválida `C:\C:\...`.
+const here = path.dirname(fileURLToPath(import.meta.url));
 const css = readFileSync(path.join(here, 'style.css'), 'utf8');
 
 describe('variables de canales --*-rgb', () => {

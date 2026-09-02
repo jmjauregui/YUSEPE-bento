@@ -313,6 +313,26 @@ npm run package:win    # solo Windows (nsis)
 npm run package:linux  # solo Linux (AppImage + deb)
 ```
 
+### Crear el ejecutable para Windows
+
+```bash
+nvm use 20.19.0        # Node 20 (mismo que CI); validá las instaladas con `nvm list`
+npm install            # si todavía no instalaste dependencias
+npm run package:win    # build de producción + instalador NSIS
+```
+
+El comando compila la app (`electron-vite build`) y genera el instalador en:
+
+```
+release\YUSEPE Bento Setup <versión>.exe    # instalador NSIS
+release\win-unpacked\                       # app portable sin instalador
+```
+
+> Para que las terminales (node-pty) funcionen en el ejecutable hace falta
+> compilar el módulo nativo con **Visual Studio Build Tools** instaladas y
+> correr `npm run rebuild` antes de empaquetar. Sin eso, la app funciona
+> igual pero sin terminales reales.
+
 Config en `electron-builder.yml`. Notas:
 
 - **node-pty** (módulo nativo) se excluye del `asar` (`asarUnpack`) porque

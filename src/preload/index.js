@@ -130,15 +130,15 @@ contextBridge.exposeInMainWorld('yusepe', {
 
     // Asocia un agente con la terminal donde corre (efímero: el ptyId
     // muere con la terminal, la identidad no).
-    bind: (name, ptyId) => ipcRenderer.invoke('loop:bind', { name, ptyId }),
-    unbind: (name) => ipcRenderer.invoke('loop:unbind', { name }),
+    bind: (name, ptyId, cwd) => ipcRenderer.invoke('loop:bind', { name, ptyId, cwd }),
+    unbind: (name, cwd) => ipcRenderer.invoke('loop:unbind', { name, cwd }),
 
     start: (cwd) => ipcRenderer.invoke('loop:start', { cwd }),
-    stop: () => ipcRenderer.invoke('loop:stop'),
+    stop: (cwd) => ipcRenderer.invoke('loop:stop', { cwd }),
 
     // Presencia: si el proceso del agente terminó, su terminal volvió al
     // prompt y no se le entrega nada (el mensaje queda pendiente).
-    presence: () => ipcRenderer.invoke('loop:presence'),
+    presence: (cwd) => ipcRenderer.invoke('loop:presence', { cwd }),
     atPrompt: (ptyId) => ipcRenderer.invoke('loop:at-prompt', { ptyId }),
 
     onDelivered: (handler) => on('loop:delivered', handler),

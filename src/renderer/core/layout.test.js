@@ -252,6 +252,40 @@ describe('moveTileTo', () => {
     expect(() => moveTileTo(tiles, 'nope', 5, 5)).not.toThrow();
     expect(tiles[0]).toMatchObject({ col: 1, row: 1 });
   });
+
+  // La regresión del salto: en un grid denso, el único hueco de verdad
+  // libre para el desplazado quedaba varias filas más abajo del contenido
+  // y el tile "desaparecía" de lo visible. El origen que dejó vacío el
+  // tile movido es un destino mejor cuando el hueco cercano no existe.
+  it('en un grid denso el desplazado hace swap con el origen en vez de irse muy abajo', () => {
+    const tiles = [
+      { id: 'A', col: 1, row: 1, colSpan: 6, rowSpan: 2 },
+      { id: 'D', col: 1, row: 3, colSpan: 6, rowSpan: 2 },
+      { id: 'B', col: 7, row: 3, colSpan: 6, rowSpan: 2 },
+      { id: 'G1', col: 1, row: 5, colSpan: 12, rowSpan: 2 },
+      { id: 'G2', col: 1, row: 7, colSpan: 12, rowSpan: 2 },
+      { id: 'G3', col: 1, row: 9, colSpan: 12, rowSpan: 2 },
+    ];
+    // A (fila 1) cae sobre B (fila 3). Para B no hay hueco en su fila
+    // (D ocupa la izquierda) ni abajo (G1-G3 llenan hasta la fila 10):
+    // sin swap terminaría en la fila 11, fuera de lo visible.
+    moveTileTo(tiles, 'A', 7, 3);
+    expect(tiles.find((t) => t.id === 'A')).toMatchObject({ col: 7, row: 3 });
+    expect(tiles.find((t) => t.id === 'B')).toMatchObject({ col: 1, row: 1 });
+    // El resto no se movió.
+    expect(tiles.find((t) => t.id === 'D')).toMatchObject({ col: 1, row: 3 });
+    expect(tiles.find((t) => t.id === 'G1')).toMatchObject({ col: 1, row: 5 });
+  });
+
+  it('con hueco cercano en su fila, el desplazado lo sigue prefiriendo al origen', () => {
+    const tiles = [
+      { id: 'A', col: 1, row: 1, colSpan: 1, rowSpan: 1 },
+      { id: 'B', col: 3, row: 3, colSpan: 1, rowSpan: 1 },
+    ];
+    moveTileTo(tiles, 'A', 3, 3);
+    const b = tiles.find((t) => t.id === 'B');
+    expect(b.row).toBe(3); // no saltó a la fila 1 aunque A la dejó libre
+  });
 });
 
 describe('findNeighbor', () => {

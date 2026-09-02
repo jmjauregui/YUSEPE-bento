@@ -386,3 +386,120 @@ describe('el ciclo completo del agente', () => {
     expect(out).toContain('@claudio');
   });
 });
+
+// C4 — el comando diag imprime veredicto en texto, no sólo números
+describe('diag', () => {
+  async function writeRec(rec) {
+    const diagDir = path.join(cwd, '.ybento', 'loop', 'diag');
+    await fs.mkdir(diagDir, { recursive: true });
+    await fs.writeFile(
+      path.join(diagDir, `${rec.agent}.json`),
+      JSON.stringify(rec, null, 2),
+      'utf8',
+    );
+  }
+
+  function makeRec(overrides = {}) {
+    const b1 = overrides.b1 ?? 'hola mundo';
+    // En el caso sano, B2 = B1 + '\r' (el Enter entra dentro de la ventana)
+    const b2 = overrides.b2 ?? (b1 + '\r');
+    return {
+      timestamp: new Date().toISOString(),
+      agent: 'claudio',
+      messageId: 'msg-test',
+      b1,
+      b1Len: b1.length,
+      b2,
+      b2Len: b2.length,
+      b2Chunks: 1,
+      truncadoPorTope: false,
+      colaVaciadaPorError: false,
+      drenajeVencido: false,
+      ...overrides,
+    };
+  }
+
+  it('sin registros informa que no hay nada', async () => {
+    const { code, out } = await cli(['diag'], { as: 'claudio' });
+    expect(code).toBe(0);
+    expect(out).toContain('No hay registros');
+  });
+
+  it('@agente sin registro muestra error explicativo con el nombre del agente', async () => {
+    const { code, err } = await cli(['diag', '@opencito'], { as: 'claudio' });
+    expect(code).toBe(1);
+    expect(err).toContain('@opencito');
+    expect(err).toContain('registro');
+    expect(err).toContain('entrega');
+  });
+
+  it('veredicto B1 = B2: señala node-pty/ConPTY/TUI', async () => {
+    await writeRec(makeRec({ b1: 'texto ok' })); // b2 = 'texto ok\r' por defecto
+    const { code, out } = await cli(['diag', '@claudio'], { as: 'claudio' });
+    expect(code).toBe(0);
+    expect(out).toContain('B1 = B2');
+    expect(out).toContain('node-pty');
+  });
+
+  it('veredicto B1 ≠ B2: señala la cola con la posición exacta', async () => {
+    await writeRec(makeRec({ b1: 'abcdefghij', b2: 'abcXXXghij' }));
+    const { code, out } = await cli(['diag', '@claudio'], { as: 'claudio' });
+    expect(code).toBe(0);
+    expect(out).toContain('B1 ≠ B2');
+    expect(out).toContain('posición 3');
+    expect(out).toContain('cola');
+  });
+
+  it('veredicto drenajeVencido: señala el timeout del dispatcher', async () => {
+    await writeRec(makeRec({ drenajeVencido: true }));
+    const { code, out } = await cli(['diag', '@claudio'], { as: 'claudio' });
+    expect(code).toBe(0);
+    expect(out).toContain('drenaje');
+  });
+
+  it('veredicto colaVaciadaPorError: señala drain/clear', async () => {
+    await writeRec(makeRec({ colaVaciadaPorError: true }));
+    const { code, out } = await cli(['diag', '@claudio'], { as: 'claudio' });
+    expect(code).toBe(0);
+    expect(out).toContain('drain');
+  });
+
+  it('lista registros disponibles con @agente y antigüedad', async () => {
+    await writeRec(makeRec());
+    const { code, out } = await cli(['diag'], { as: 'claudio' });
+    expect(code).toBe(0);
+    expect(out).toContain('@claudio');
+    expect(out).toContain('msg-test');
+  });
+
+  it('--payload vuelca B2 completo al final', async () => {
+    const b2 = 'contenido completo del B2 para diffear';
+    await writeRec(makeRec({ b1: b2, b2 }));
+    const { code, out } = await cli(['diag', '@claudio', '--payload'], { as: 'claudio' });
+    expect(code).toBe(0);
+    expect(out).toContain(b2);
+    expect(out).toContain('B2 completo');
+  });
+
+  it('imprime largos de B1 y B2 explícitamente', async () => {
+    await writeRec(makeRec({ b1: 'a'.repeat(500), b2: 'a'.repeat(500) }));
+    const { code, out } = await cli(['diag', '@claudio'], { as: 'claudio' });
+    expect(code).toBe(0);
+    expect(out).toContain('500');
+  });
+
+  // C3 del comando: escritura ajena durante la ventana → aviso de contaminación
+  it('avisa contaminación cuando B2 tiene más datos que B1+\\r', async () => {
+    // Simula tipeo del usuario solapado con el drenaje de un mensaje largo:
+    // B2 = payload + tipeo_ajeno + '\r'
+    const b1 = 'mensaje del loop de 50 chars, lorem ipsum dolor sit';
+    const b2 = b1 + 'ls -la\n' + '\r'; // tipeo del usuario se coló
+    await writeRec(makeRec({ b1, b2 }));
+    const { code, out } = await cli(['diag', '@claudio'], { as: 'claudio' });
+    expect(code).toBe(0);
+    expect(out).toContain('ajenas');           // avisa contaminación
+    expect(out).toContain('Repetir');          // pide repetir la captura
+    expect(out).not.toContain('createWriteQueue'); // NO acusa la cola
+    expect(out).not.toContain('node-pty');         // NO acusa node-pty
+  });
+});

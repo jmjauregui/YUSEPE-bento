@@ -21,8 +21,8 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import {
-  getAgent, inbox, inboxSummary, listAgents, normalizeName, postMessage,
-  setAgentState, STATES,
+  formatForTerminal, getAgent, inbox, inboxSummary, listAgents, listMessages,
+  normalizeName, postMessage, setAgentState, STATES,
 } from '../main/loopOps.js';
 
 const HELP = `ybento — mensajería entre terminales del loop de YUSEPE Bento
@@ -34,6 +34,9 @@ const HELP = `ybento — mensajería entre terminales del loop de YUSEPE Bento
   ybento bandeja --ultimo          sólo el último
   ybento enviar @nombre "texto"    le mando un mensaje a otro agente
   ybento enviar @usuario "texto"   le aviso al humano
+  ybento diag @agente              diagnóstico de la última entrega a ese agente
+  ybento diag @agente --payload    igual, más el texto B2 completo para diffear
+  ybento diag                      lista los registros de diagnóstico disponibles
 
 Para mensajes largos, evitá el quoting del shell — pasalos por stdin o
 por archivo, así un backtick o un $ dentro del texto no te lo rompe:
@@ -49,6 +52,7 @@ Opciones:
   -f <archivo>    leer el mensaje de un archivo ("-" = stdin)
   --re <n>        este mensaje responde al #n (lo ve el otro al recibirlo)
   --ocupado       al enviar, seguir en working (por defecto pasa a waiting)
+  --payload       (diag) vuelca B2 completo al final
   --json          salida en JSON
   --help          esta ayuda
 `;
@@ -90,6 +94,7 @@ export function parseArgs(argv) {
     if (arg === '--re' || arg === '--responde') { flags.re = argv[++i]; continue; }
     if (arg === '--json') { flags.json = true; continue; }
     if (arg === '--ultimo' || arg === '--last') { flags.ultimo = true; continue; }
+    if (arg === '--payload') { flags.payload = true; continue; }
     if (arg === '--help' || arg === '-h' || arg === 'ayuda') { flags.help = true; continue; }
     positional.push(arg);
   }
@@ -252,6 +257,139 @@ export async function run(argv, {
 
         if (flags.json) { json({ ...msg, waiting: freed }); return 0; }
         print(`Enviado ${to(msg.to)}.${freed ? ' Quedaste en waiting.' : ''}`);
+        return 0;
+      }
+
+      case 'diag': {
+        const [target] = rest;
+
+        if (!target) {
+          // Lista los registros disponibles
+          const diagDir = path.join(root, '.ybento', 'loop', 'diag');
+          let files;
+          try { files = await fs.readdir(diagDir); }
+          catch { print('No hay registros de diagnóstico disponibles.'); return 0; }
+          const recs = files.filter((f) => f.endsWith('.json'));
+          if (!recs.length) { print('No hay registros de diagnóstico disponibles.'); return 0; }
+          print('Registros disponibles:');
+          for (const f of recs) {
+            const agentName = f.slice(0, -5);
+            try {
+              const rec = JSON.parse(await fs.readFile(path.join(diagDir, f), 'utf8'));
+              const secsAgo = Math.round((Date.now() - new Date(rec.timestamp)) / 1000);
+              print(`  @${agentName} — hace ${secsAgo}s (mensaje ${rec.messageId})`);
+            } catch {
+              print(`  @${agentName} — (registro ilegible)`);
+            }
+          }
+          return 0;
+        }
+
+        const agentName = normalizeName(target);
+        const diagFile = path.join(root, '.ybento', 'loop', 'diag', `${agentName}.json`);
+        let rec;
+        try {
+          rec = JSON.parse(await fs.readFile(diagFile, 'utf8'));
+        } catch {
+          return fail(`No hay registro de diagnóstico para @${agentName}. `
+            + '¿Ya hubo una entrega a ese agente? '
+            + 'Los registros se crean al entregar un mensaje del loop.');
+        }
+
+        // Busca el mensaje fuente para obtener la longitud de A y recalcular
+        // el B1 esperado (re-ejecutando formatForTerminal sin cruce ni HEAD).
+        let aLen = null;
+        let expectedB1 = null;
+        try {
+          const msgs = await listMessages(root, { limit: 10000 });
+          const msg = msgs.find((m) => m.id === rec.messageId);
+          if (msg) {
+            aLen = msg.text.length;
+            expectedB1 = formatForTerminal(msg);
+          }
+        } catch { /* mensaje ya no disponible: se continúa sin A */ }
+
+        // Separa la parte de texto de B2 (B1) del \r final
+        const b2TextPart = rec.b2.slice(0, rec.b1Len);
+        const b2EnterPart = rec.b2.slice(rec.b1Len);
+        const b1EqB2Text = b2TextPart === rec.b1;
+        const b2HasEnter = b2EnterPart === '\r';
+
+        // Primer carácter distinto entre B1 y B2 (en la parte de texto)
+        let firstDiff = -1;
+        if (!b1EqB2Text) {
+          const minLen = Math.min(rec.b1Len, rec.b2Len);
+          for (let i = 0; i < minLen; i++) {
+            if (rec.b1[i] !== rec.b2[i]) { firstDiff = i; break; }
+          }
+          if (firstDiff === -1) firstDiff = minLen; // uno es prefijo del otro
+        }
+
+        const ts = new Date(rec.timestamp).toLocaleString('es', { hour12: false });
+        print(`Última entrega a @${rec.agent} — ${ts}`);
+        print(`  Mensaje: ${rec.messageId}`);
+        if (aLen !== null) print(`  A (texto en messages.jsonl): ${aLen} chars`);
+        if (expectedB1 !== null && Math.abs(expectedB1.length - rec.b1Len) > 2) {
+          print(`  B1 esperado (sin cruce/HEAD): ${expectedB1.length} chars`);
+        }
+        print(`  B1 (payload a writeToPty):  ${rec.b1Len} chars`);
+        print(`  B2 (chunks a proc.write):   ${rec.b2Len} chars en ${rec.b2Chunks} chunks`
+          + (b2HasEnter ? ' (incluye el \\r)' : ' — falta el \\r'));
+        if (b1EqB2Text) {
+          print('  B1 vs B2: IGUALES (texto idéntico)');
+        } else {
+          print(`  B1 vs B2: DIFIEREN — primer carácter distinto en posición ${firstDiff}`);
+        }
+        if (rec.truncadoPorTope) print('  ⚠ B2 truncado por tope (>64 KB): registro parcial');
+        if (rec.colaVaciadaPorError) print('  ⚠ cola vaciada por error (catch en drain)');
+        if (rec.drenajeVencido) print('  ⚠ drenaje venció por tiempo (timeout del dispatcher)');
+
+        // Detecta escrituras ajenas durante la ventana: tipeo del usuario,
+        // snippets o tile.command que llegaron mientras la cola drenaba.
+        // En ese caso el diagnóstico no es confiable y no se acusa a nadie.
+        const b2HasExtraData = rec.b2Len > rec.b1Len + 1;
+
+        print('');
+
+        // Veredicto: tabla de la spec resuelta en texto
+        if (b2HasExtraData) {
+          print('Veredicto: escrituras ajenas durante la ventana de captura.');
+          print(`  B2 tiene ${rec.b2Len - rec.b1Len - 1} char(s) de más`
+            + ` (esperado: ${rec.b1Len + 1} chars, recibido: ${rec.b2Len} chars).`);
+          print('  La cola drenó mientras el usuario tipeaba, un snippet se ejecutó');
+          print('  o un tile.command llegó al pty: los chunks ajenos se mezclaron con');
+          print('  el payload y el diagnóstico no es confiable.');
+          print('  → Repetir la captura cuando el agente reciba el próximo mensaje');
+          print('    sin usar esa terminal.');
+        } else if (rec.colaVaciadaPorError || rec.drenajeVencido) {
+          print('Veredicto: la cola se vació por error o el drenaje venció por tiempo.');
+          print('  La vía de pérdida es el catch/clear() de drain() en createWriteQueue,');
+          print('  o el pty tardó más de 5 s en drenar (pty muerto, proceso bloqueado).');
+          print('  Compará B1 vs B2 para ver cuánto llegó a proc.write antes del error.');
+        } else if (!b1EqB2Text) {
+          print(`Veredicto: B1 ≠ B2 — se perdió en nuestra cola (createWriteQueue).`);
+          print(`  El primer carácter distinto está en la posición ${firstDiff}.`);
+          print('  B1 es lo que Bento quiso escribir; B2 es lo que proc.write recibió.');
+          print('  Revisar drain() y el writeFn de ipc.js. No es node-pty ni el TUI.');
+        } else if (!b2HasEnter) {
+          print('Veredicto: texto (B1) llegó completo pero falta el \\r.');
+          print('  El Enter no llegó a proc.write — revisar el writeToPty del repartidor.');
+        } else if (expectedB1 !== null && expectedB1.length > rec.b1Len + 10) {
+          print('Veredicto: A completo pero B1 más corto de lo esperado.');
+          print('  Posible problema en formatForTerminal o en la construcción del payload.');
+          print('  B1 tiene lo que writeToPty recibió; si falta texto, se perdió antes.');
+        } else {
+          print('Veredicto: B1 = B2 → no hubo pérdida en la cola de Bento.');
+          print('  Si el agente reportó texto cortado, la pérdida está aguas abajo:');
+          print('  → node-pty, ConPTY (Windows) o el TUI del agente (Claude Code, opencode).');
+          print('  Pedirle al agente que muestre exactamente qué vio en su terminal.');
+        }
+
+        if (flags.payload) {
+          print('');
+          print('--- B2 completo ---');
+          print(rec.b2);
+        }
         return 0;
       }
 

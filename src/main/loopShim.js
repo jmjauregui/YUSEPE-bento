@@ -48,19 +48,39 @@ set ELECTRON_RUN_AS_NODE=1\r
  * Se reescribe siempre: si el usuario actualizó la app, la ruta al binario
  * de Electron cambió y un wrapper viejo apuntaría a algo que ya no existe.
  *
+ * En Windows se generan DOS wrappers:
+ *   - `ybento.cmd` para PowerShell / CMD (el caso normal del agente)
+ *   - `ybento`     para Git Bash / herramienta Bash de Claude Code
+ *
+ * La herramienta Bash de Claude Code corre en /usr/bin/bash (Git Bash en
+ * Windows) y NO ejecuta .cmd nativo: lo interpreta como shell script y
+ * falla si hay algo que llama a `node`. El shim Unix resuelve esto usando
+ * el mismo mecanismo (ELECTRON_RUN_AS_NODE=1 + binario de la app) pero en
+ * sintaxis sh, que Git Bash sí entiende.
+ *
  * @param {{ binDir: string, cliPath: string, execPath: string, platform?: string }} opts
  */
 export async function ensureShim({ binDir, cliPath, execPath, platform = process.platform }) {
   await fs.mkdir(binDir, { recursive: true });
 
   const isWin = platform === 'win32';
-  const file = path.join(binDir, isWin ? 'ybento.cmd' : 'ybento');
-  const content = isWin
-    ? windowsWrapper({ execPath, cliPath })
-    : unixWrapper({ execPath, cliPath });
 
-  await fs.writeFile(file, content, 'utf8');
-  if (!isWin) await fs.chmod(file, 0o755);
+  if (isWin) {
+    // CMD/PowerShell
+    const cmdFile = path.join(binDir, 'ybento.cmd');
+    await fs.writeFile(cmdFile, windowsWrapper({ execPath, cliPath }), 'utf8');
+
+    // Git Bash / herramienta Bash de Claude Code
+    const shFile = path.join(binDir, 'ybento');
+    await fs.writeFile(shFile, unixWrapper({ execPath, cliPath }), 'utf8');
+    await fs.chmod(shFile, 0o755);
+
+    return { binDir, file: cmdFile };
+  }
+
+  const file = path.join(binDir, 'ybento');
+  await fs.writeFile(file, unixWrapper({ execPath, cliPath }), 'utf8');
+  await fs.chmod(file, 0o755);
 
   return { binDir, file };
 }

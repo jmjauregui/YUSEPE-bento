@@ -31,6 +31,12 @@ export async function searchPhotos(query, page = 1) {
     id: p.id,
     thumb: p.src?.medium,
     full: p.src?.large2x || p.src?.large || p.src?.original,
+    // `original` viaja aparte y sin parámetros: es la foto a resolución
+    // completa, y el picker le agrega el redimensionado del CDN a la
+    // medida de la pantalla real. `large2x` (el fallback `full`) mide
+    // 1880px fijos — en una pantalla 2K/4K el `cover` la estira y el
+    // fondo se ve borroso.
+    original: p.src?.original,
     color: p.avg_color,
     photographerName: p.photographer || 'Desconocido',
     photographerUrl: p.photographer_url || 'https://www.pexels.com',

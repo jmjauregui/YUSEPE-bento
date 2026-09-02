@@ -33,6 +33,7 @@ import { focusTileById } from './bentoGrid.js';
 import { labelFor } from './workspaceManager.js';
 import { applySavedWidth, makeResizeHandle } from '../utils/resizableSidebar.js';
 import { toast } from './toast.js';
+import { notifyUserMessage } from '../core/loopNotify.js';
 
 const WIDTH_OPTS = {
   storageKey: 'yusepe:loop-width',
@@ -116,6 +117,60 @@ let isOpen = false;
 /** A quién le escribe el usuario. Se recuerda entre mensajes. */
 let target = null;
 
+/* Estado del compositor persistente (spec 022, ruta C).
+ * El textarea se crea una vez; sólo las pills se repintan en cada refresh. */
+let currentAgents = [];
+let composerBoxEl = null;
+let pillsContainerEl = null;
+let composerInput = null;
+let composerSendBtn = null;
+let composerNoAgentsEl = null;
+
+/* Estado del render incremental del hilo (spec 023).
+ * Ids en el orden del DOM y firma de colores para detectar cuándo reconstruir. */
+let renderedIds = [];
+let renderedSig = null;
+
+/* ---------- Modo del loop: un loop a la vez vs. simultáneos ---------- */
+
+const LOOP_MODE_KEY = 'yusepe:loop-mode';
+
+export function getLoopMode() {
+  const v = localStorage.getItem(LOOP_MODE_KEY);
+  return v === 'multi' ? 'multi' : 'single';
+}
+
+export function setLoopMode(mode) {
+  localStorage.setItem(LOOP_MODE_KEY, mode === 'multi' ? 'multi' : 'single');
+}
+
+/* ---------- Estado abierto/cerrado por workspace ---------- */
+
+const LOOP_OPEN_KEY = 'yusepe:loop-open';
+
+function readOpenStates() {
+  try { return JSON.parse(localStorage.getItem(LOOP_OPEN_KEY) || '{}'); }
+  catch { return {}; }
+}
+
+function persistOpenState(profileId, open) {
+  if (!profileId) return;
+  const states = readOpenStates();
+  states[profileId] = open;
+  localStorage.setItem(LOOP_OPEN_KEY, JSON.stringify(states));
+}
+
+function savedOpenState(profileId) {
+  return profileId ? (readOpenStates()[profileId] ?? false) : false;
+}
+
+/**
+ * Timestamp del mensaje más reciente para el que ya sonó la notificación.
+ * Se fija a Date.now() al cargar el workspace para no disparar sonidos
+ * sobre mensajes históricos que ya estaban en el archivo.
+ */
+let lastNotifiedAt = 0;
+
 const cwd = () => state.profile?.cwd || null;
 
 export function initLoopSidebar() {
@@ -130,15 +185,31 @@ export function initLoopSidebar() {
   // tiene que seguir andando con el panel cerrado.
   bus.on('profile:loaded', () => {
     target = null;
+    // Resetear el render incremental: ids de otro workspace no deben colarse.
+    renderedIds = [];
+    renderedSig = null;
+    // No notificar mensajes que ya existían al abrir el workspace.
+    lastNotifiedAt = Date.now();
     if (cwd()) window.yusepe.loop.start(cwd());
-    if (isOpen) refresh();
+    // Restaurar el estado abierto/cerrado guardado para este workspace.
+    if (savedOpenState(state.profile?.id)) openSidebar();
+    else closeSidebar();
   });
-  bus.on('workspace:left', () => window.yusepe.loop.stop());
+  bus.on('workspace:left', () => {
+    // Guardar el estado actual antes de salir, para restaurarlo al volver.
+    persistOpenState(state.profile?.id, isOpen);
+    // En modo "un loop a la vez", detener el dispatcher de este workspace.
+    // En modo "loops simultáneos", dejarlo corriendo para que los agentes
+    // de este workspace sigan recibiendo mensajes aunque no estemos acá.
+    if (getLoopMode() === 'single') {
+      window.yusepe.loop.stop(cwd());
+    }
+  });
   bus.on('profile:cleared', () => { closeSidebar(); window.yusepe.loop.stop(); });
 
   // Cambios en disco (los postea el CLI de cada agente, desde otro proceso).
-  window.yusepe.loop.onChanged(() => { if (isOpen) refresh(); });
-  window.yusepe.loop.onDelivered(() => { if (isOpen) refresh(); });
+  window.yusepe.loop.onChanged(() => { if (isOpen) refresh(); checkNotify(); });
+  window.yusepe.loop.onDelivered(() => { if (isOpen) refresh(); checkNotify(); });
   // Un agente que se cae no genera ningún cambio en disco, así que sin
   // este aviso el panel lo seguiría mostrando en verde.
   window.yusepe.loop.onPresence(({ agent, present }) => {
@@ -147,6 +218,28 @@ export function initLoopSidebar() {
       toast.warning(`@${agent} dejó de correr en su terminal — sus mensajes quedan pendientes`);
     }
   });
+}
+
+/**
+ * Revisa si llegaron mensajes nuevos dirigidos al usuario y, si es así,
+ * dispara la notificación sonora + la de sistema (cuando la ventana no
+ * tiene foco). Se llama desde los handlers onChanged / onDelivered,
+ * independientemente de si el panel está abierto o no.
+ */
+async function checkNotify() {
+  if (!cwd() || !lastNotifiedAt) return;
+  try {
+    const messages = await window.yusepe.loop.messages(cwd(), { limit: 20 });
+    const fresh = messages.filter(
+      (m) => m.to === 'usuario' && new Date(m.createdAt).getTime() > lastNotifiedAt,
+    );
+    if (!fresh.length) return;
+    lastNotifiedAt = Math.max(...fresh.map((m) => new Date(m.createdAt).getTime()));
+    const last = fresh[fresh.length - 1];
+    await notifyUserMessage(last.from);
+  } catch {
+    // No bloquear la UI si la notificación falla
+  }
 }
 
 export function isLoopSidebarOpen() {
@@ -166,6 +259,7 @@ function openSidebar() {
     return;
   }
   isOpen = true;
+  persistOpenState(state.profile?.id, true);
   panelEl.classList.remove('hidden');
   refresh();
 }
@@ -173,6 +267,7 @@ function openSidebar() {
 function closeSidebar() {
   if (!panelEl) return;
   isOpen = false;
+  persistOpenState(state.profile?.id, false);
   panelEl.classList.add('hidden');
 }
 
@@ -180,6 +275,10 @@ function closeSidebar() {
 
 function buildChrome() {
   panelEl.innerHTML = '';
+  // Resetear estado persistente: el DOM fue destruido, hay que recrearlo.
+  currentAgents = []; composerBoxEl = null; pillsContainerEl = null;
+  composerInput = null; composerSendBtn = null; composerNoAgentsEl = null;
+  renderedIds = []; renderedSig = null;
 
   const title = h('div', { class: 'text-xs text-fg-soft flex-1 flex items-center gap-1.5' }, [
     h('span', { class: 'text-accent-soft flex items-center' }, svgIcon('loop', { size: 14 })),
@@ -218,13 +317,16 @@ async function refresh() {
     const [agents, messages, presence] = await Promise.all([
       window.yusepe.loop.agents(cwd()),
       window.yusepe.loop.messages(cwd(), { limit: 200 }),
-      window.yusepe.loop.presence(),
+      window.yusepe.loop.presence(cwd()),
     ]);
     renderRoster(agents, presence || {});
     renderStream(messages, agents);
     renderComposer(agents);
   } catch (err) {
     streamEl.innerHTML = '';
+    // Sincronizar el estado con el DOM que acabamos de vaciar.
+    renderedIds = [];
+    renderedSig = null;
     streamEl.append(h('p', { class: 'text-xs text-red-400 px-1' }, err?.message || String(err)));
   }
 }
@@ -361,15 +463,27 @@ function agentRow(agent, presence) {
 
 /* ---------- Hilo de mensajes ---------- */
 
+/**
+ * Reconstrucción completa del hilo: borra todo y rehace desde cero.
+ * Es la "red" del render incremental — se usa cuando el caso feliz
+ * no aplica (firma de colores cambió, ids fuera de orden, archivo rehecho).
+ * El peor caso sigue siendo el comportamiento anterior.
+ */
+function rebuildStream(messages, colors) {
+  streamEl.innerHTML = '';
+  for (const msg of messages) streamEl.append(messageRow(msg, colors));
+  renderedIds = messages.map((m) => m.id);
+  renderedSig = JSON.stringify(colors);
+}
+
 function renderStream(messages, agents) {
-  // Si el usuario está leyendo historial más arriba, no lo arrastramos al
-  // fondo porque otro agente acaba de postear. Convención de chat: sólo
-  // sigue solo cuando ya estabas mirando lo último.
+  // Calcular ANTES de tocar el DOM: innerHTML='' recorta scrollTop a 0.
   const atBottom = streamEl.scrollHeight - streamEl.scrollTop - streamEl.clientHeight < 40;
 
-  streamEl.innerHTML = '';
-
   if (!messages.length) {
+    // Vacío explícito: sin esto los nodos persistentes quedan como fantasmas.
+    streamEl.innerHTML = '';
+    renderedIds = [];
     emptyEl.classList.remove('hidden');
     emptyEl.textContent = agents.length
       ? 'Sin mensajes todavía. Escribile a una terminal desde abajo y arranca el loop.'
@@ -378,14 +492,78 @@ function renderStream(messages, agents) {
   }
   emptyEl.classList.add('hidden');
 
-  // El color es el del *emisor*: lo que se busca al barrer el hilo con la
-  // vista es "qué dijo @qa", no a quién se lo dijo.
+  // El color es el del *emisor*: lo que se busca al barrer el hilo es
+  // "qué dijo @qa", no a quién se lo dijo.
   const colors = Object.fromEntries(agents.map((a) => [a.name, colorOf(a)]));
+  const sig = JSON.stringify(colors);
 
-  for (const msg of messages) streamEl.append(messageRow(msg, colors));
-  if (atBottom) {
-    queueMicrotask(() => { streamEl.scrollTop = streamEl.scrollHeight; });
+  // RED: la firma de colores cambió (agente renombrado, color editado,
+  // agente nuevo o que salió). Evento raro, siempre disparado por el usuario
+  // desde un modal, no por el poll — el parpadeo es aceptable.
+  if (sig !== renderedSig) {
+    rebuildStream(messages, colors);
+    if (atBottom) queueMicrotask(() => { streamEl.scrollTop = streamEl.scrollHeight; });
+    return;
   }
+
+  const newIds = messages.map((m) => m.id);
+
+  // ¿Qué ids de renderedIds siguen en la lista nueva?
+  const kept = renderedIds.filter((id) => newIds.includes(id));
+
+  // RED: todos los ids previos desaparecieron (archivo borrado o workspace
+  // cambiado pese al reset en profile:loaded).
+  if (renderedIds.length > 0 && kept.length === 0) {
+    rebuildStream(messages, colors);
+    if (atBottom) queueMicrotask(() => { streamEl.scrollTop = streamEl.scrollHeight; });
+    return;
+  }
+
+  // RED: los ids que sobreviven no son un prefijo de newIds.
+  // Ocurre si el archivo fue truncado o si una lectura parcial corrió los seq
+  // (caso documentado en spec 023: la clave es id, no seq).
+  if (kept.some((id, i) => id !== newIds[i])) {
+    rebuildStream(messages, colors);
+    if (atBottom) queueMicrotask(() => { streamEl.scrollTop = streamEl.scrollHeight; });
+    return;
+  }
+
+  // RED: el DOM difiere de renderedIds (por ejemplo, el catch de refresh()
+  // borró streamEl sin resetear el estado, o cualquier otro camino que toque
+  // streamEl sin avisar). Previene que el hilo se congele en el cartel de error.
+  if (streamEl.children.length !== renderedIds.length) {
+    rebuildStream(messages, colors);
+    if (atBottom) queueMicrotask(() => { streamEl.scrollTop = streamEl.scrollHeight; });
+    return;
+  }
+
+  // Camino incremental.
+
+  // 1. Sacar por arriba los ids que ya no están en la ventana de 200.
+  const toRemove = renderedIds.length - kept.length;
+  if (toRemove > 0) {
+    // Medir altura total de las filas que salen ANTES de quitarlas.
+    let removedHeight = 0;
+    for (let i = 0; i < toRemove; i++) {
+      const el = streamEl.children[i];
+      if (el) removedHeight += el.offsetHeight;
+    }
+    for (let i = 0; i < toRemove; i++) {
+      if (streamEl.firstChild) streamEl.removeChild(streamEl.firstChild);
+    }
+    // Compensar scrollTop para que la posición de lectura no salte.
+    if (!atBottom) streamEl.scrollTop = Math.max(0, streamEl.scrollTop - removedHeight);
+  }
+
+  // 2. Appendear los ids nuevos (los que no estaban en DOM).
+  const renderedSet = new Set(renderedIds);
+  for (const msg of messages) {
+    if (!renderedSet.has(msg.id)) streamEl.append(messageRow(msg, colors));
+  }
+
+  renderedIds = newIds;
+
+  if (atBottom) queueMicrotask(() => { streamEl.scrollTop = streamEl.scrollHeight; });
 }
 
 function messageRow(msg, colors = {}) {
@@ -396,7 +574,7 @@ function messageRow(msg, colors = {}) {
     ? `vos → @${msg.to}`
     : (forMe ? `@${msg.from} → vos` : `@${msg.from} → @${msg.to}`);
 
-  const body = h('div', { class: 'text-xs text-fg whitespace-pre-wrap break-words' }, msg.text);
+  const body = h('div', { class: 'text-xs text-fg whitespace-pre-wrap break-words select-text cursor-text' }, msg.text);
 
   // El nombre del emisor va en su color; el resto del encabezado queda
   // apagado. Así el color aparece dos veces (borde y nombre) y se aprende
@@ -478,81 +656,55 @@ function formatTime(iso) {
 /* ---------- Composer ---------- */
 
 /**
- * Redibuja el composer conservando el foco y lo escrito.
+ * Crea una sola vez el textarea, el botón y sus listeners (spec 022, ruta C).
  *
- * `refresh()` corre sola cada vez que cambia algo en disco (otro agente
- * posteó), y sin esto el usuario perdería el cursor y el texto a medio
- * escribir en mitad de una frase.
+ * Al no destruir el textarea en cada refresh, el caret, el historial de
+ * deshacer y la composición IME sobreviven al poll de 1,5 s. `send()` lee
+ * `currentAgents` en el momento del envío — no captura el parámetro —, así
+ * un agente sumado después del primer render se reconoce en el atajo
+ * "@nombre texto" en vez de ir silenciosamente al destinatario equivocado.
  */
-function renderComposer(agents) {
-  const previous = composerEl.querySelector('textarea');
-  const draft = previous?.value || '';
-  const hadFocus = previous && document.activeElement === previous;
+function ensureComposerBox() {
+  if (composerBoxEl) return;
 
-  composerEl.innerHTML = '';
+  pillsContainerEl = h('div', { class: 'flex flex-wrap gap-1 mb-1.5' });
 
-  if (!agents.length) {
-    composerEl.append(h('p', { class: 'text-[10px] text-fg-subtle px-1' },
-      'Sumá una terminal al loop para poder escribirle.'));
-    return;
-  }
-
-  // El destino sigue siendo válido sólo si ese agente sigue en el loop.
-  if (!agents.some((a) => a.name === target)) target = agents[0].name;
-
-  const pills = h('div', { class: 'flex flex-wrap gap-1 mb-1.5' },
-    agents.map((agent) => h('button', {
-      class: [
-        'text-[10px] px-1.5 py-0.5 rounded-full border transition',
-        agent.name === target
-          ? 'bg-accent/20 border-accent/40 text-fg'
-          : 'border-line hover:bg-bg-elev',
-      ].join(' '),
-      // Mismo color que sus burbujas, salvo cuando es el destino elegido:
-      // ahí manda el accent, que es lo que marca la selección.
-      style: agent.name === target
-        ? null
-        : `color: color-mix(in srgb, ${colorOf(agent)} 75%, var(--color-fg))`,
-      title: clampRole(agent.role) || `Escribirle a @${agent.name}`,
-      onClick: () => {
-        target = agent.name;
-        renderComposer(agents);
-        composerEl.querySelector('textarea')?.focus();
-      },
-    }, `@${agent.name}`)));
-
-  const input = h('textarea', {
+  composerInput = h('textarea', {
     rows: '2',
-    placeholder: `Mensaje para @${target}…  (Enter envía)`,
     class: 'w-full bg-bg-elev border border-line rounded-md px-2 py-1.5 text-xs resize-none '
       + 'focus:outline-none focus:ring-1 focus:ring-accent placeholder:text-fg-subtle/70',
     spellcheck: 'false',
   });
 
   const send = async () => {
-    const raw = input.value.trim();
+    const raw = composerInput.value.trim();
     if (!raw) return;
 
-    // Un `@nombre` al principio manda sobre la pill elegida: escribir
-    // "@opencito revisá esto" es más rápido que cambiar de destino.
+    // Un `@nombre` al principio manda sobre la pill elegida.
     const match = raw.match(/^@([a-z0-9][a-z0-9_-]*)\s+([\s\S]+)$/i);
-    const to = match && agents.some((a) => a.name === match[1].toLowerCase())
+    // Lee currentAgents en el momento del envío, no el closure del primer render.
+    const to = match && currentAgents.some((a) => a.name === match[1].toLowerCase())
       ? match[1].toLowerCase()
       : target;
     const text = match && to === match[1].toLowerCase() ? match[2] : raw;
 
-    input.value = '';
+    composerInput.value = '';
+    composerInput._reset?.();
     try {
       await window.yusepe.loop.post(cwd(), { from: 'usuario', to, text });
       target = to;
       await refresh();
     } catch (err) {
-      input.value = raw; // no le comemos lo que escribió
+      composerInput.value = raw;
+      // Asignar .value por código no dispara 'input', así que resize() no corre
+      // sola: el borrador vuelve pero la caja queda en la altura mínima con
+      // overflow oculto. Hay que llamarla explícitamente.
+      resize();
       toast.error(err?.message || String(err));
     }
   };
 
-  input.addEventListener('keydown', (e) => {
+  composerInput.addEventListener('keydown', (e) => {
     // Enter envía; Shift+Enter hace salto de línea (convención de chat).
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -560,18 +712,107 @@ function renderComposer(agents) {
     }
   });
 
-  const sendBtn = h('button', {
+  composerSendBtn = h('button', {
     class: 'mt-1.5 w-full flex items-center justify-center gap-1.5 text-xs px-2 py-1.5 rounded-md '
       + 'bg-accent hover:bg-accent-soft text-white transition',
     onClick: send,
-  }, [svgIcon('send', { size: 12 }), h('span', {}, `Enviar a @${target}`)]);
+  }, [svgIcon('send', { size: 12 }), h('span', {}, 'Enviar')]);
 
-  input.value = draft;
-  composerEl.append(pills, input, sendBtn);
-  if (hadFocus) {
-    input.focus();
-    input.setSelectionRange(draft.length, draft.length);
+  composerBoxEl = h('div', {}, [pillsContainerEl, composerInput, composerSendBtn]);
+  composerEl.append(composerBoxEl);
+
+  // Medir minH con el textarea vacío: es el estado legítimo al crear la caja.
+  // La maniobra value=''→medir→value=draft que causaba el bug desaparece aquí.
+  composerInput.style.height = 'auto';
+  const minH = composerInput.scrollHeight;
+  composerInput.style.height = `${minH}px`;
+
+  // maxH se calcula perezosamente en resize(): así es correcto ante cambios
+  // de alto de ventana, ancho del panel (las pills reenvuelven) y cantidad
+  // de agentes, sin necesitar un ResizeObserver.
+  const resize = () => {
+    const prevScroll = composerInput.scrollTop;
+    composerInput.style.height = 'auto';
+    const natural = composerInput.scrollHeight;
+    const maxComposer = panelEl.offsetHeight * 0.33;
+    const fixed = pillsContainerEl.offsetHeight + composerSendBtn.offsetHeight + 20;
+    const maxH = Math.max(minH, maxComposer - fixed);
+    const next = Math.min(Math.max(natural, minH), maxH);
+    composerInput.style.height = `${next}px`;
+    composerInput.style.overflowY = natural > maxH ? 'auto' : 'hidden';
+    if (natural > maxH) composerInput.scrollTop = prevScroll;
+  };
+
+  composerInput.addEventListener('input', resize);
+
+  composerInput._reset = () => {
+    composerInput.style.height = `${minH}px`;
+    composerInput.style.overflowY = 'hidden';
+  };
+}
+
+/**
+ * Repinta sólo las pills y actualiza placeholder y etiqueta del botón.
+ * El textarea no se toca: el caret, el borrador y el historial sobreviven.
+ */
+function renderPills(agents) {
+  currentAgents = agents;
+
+  // Re-targetear si el destino ya no está en el loop.
+  if (!agents.some((a) => a.name === target)) target = agents[0]?.name || null;
+
+  pillsContainerEl.innerHTML = '';
+  for (const agent of agents) {
+    pillsContainerEl.append(h('button', {
+      class: [
+        'text-[10px] px-1.5 py-0.5 rounded-full border transition',
+        agent.name === target
+          ? 'bg-accent/20 border-accent/40 text-fg'
+          : 'border-line hover:bg-bg-elev',
+      ].join(' '),
+      style: agent.name === target
+        ? null
+        : `color: color-mix(in srgb, ${colorOf(agent)} 75%, var(--color-fg))`,
+      title: clampRole(agent.role) || `Escribirle a @${agent.name}`,
+      onClick: () => {
+        target = agent.name;
+        // currentAgents, no agents: puede haber llegado un agente nuevo entre
+        // el render de estas pills y el momento del click.
+        renderPills(currentAgents);
+        composerInput?.focus();
+      },
+    }, `@${agent.name}`));
   }
+
+  if (composerInput) {
+    composerInput.placeholder = `Mensaje para @${target}…  (Enter envía)`;
+  }
+  if (composerSendBtn) {
+    const span = composerSendBtn.querySelector('span');
+    if (span) span.textContent = `Enviar a @${target}`;
+  }
+}
+
+function renderComposer(agents) {
+  if (!agents.length) {
+    // Ocultar la caja (no destruirla: el borrador sobrevive).
+    if (composerBoxEl) composerBoxEl.classList.add('hidden');
+    if (!composerNoAgentsEl) {
+      composerNoAgentsEl = h('p', { class: 'text-[10px] text-fg-subtle px-1' },
+        'Sumá una terminal al loop para poder escribirle.');
+      composerEl.prepend(composerNoAgentsEl);
+    } else {
+      composerNoAgentsEl.classList.remove('hidden');
+    }
+    return;
+  }
+
+  // Ocultar el mensaje orientativo si estaba visible.
+  if (composerNoAgentsEl) composerNoAgentsEl.classList.add('hidden');
+
+  ensureComposerBox();
+  composerBoxEl.classList.remove('hidden');
+  renderPills(agents);
 }
 
 /* ---------- Alta y edición de agentes ---------- */
@@ -825,7 +1066,7 @@ async function bindTerminal(tile, name) {
   const ptyId = entry?.kind === 'terminal' ? entry.meta?.ptyId : null;
   if (!ptyId) return;
 
-  await window.yusepe.loop.bind(name, ptyId);
+  await window.yusepe.loop.bind(name, ptyId, cwd());
 
   // El `export` sólo si la terminal está en el prompt del shell. Si adentro
   // ya hay un agente corriendo, ese texto le entra como si fuera un mensaje

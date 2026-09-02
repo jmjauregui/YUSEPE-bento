@@ -7,8 +7,9 @@
  */
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { ClipboardAddon } from '@xterm/addon-clipboard';
 import '@xterm/xterm/css/xterm.css';
-import { h, debounce } from '../utils/dom.js';
+import { h, debounce, escapeHtml } from '../utils/dom.js';
 import { bus } from '../core/eventBus.js';
 import { state } from '../core/state.js';
 import * as liveTiles from '../core/liveTiles.js';
@@ -49,7 +50,7 @@ export async function createTerminalTile(tile, profileId) {
     // rehacerla al volver a este workspace o el repartidor no sabría a qué
     // terminal pegarle.
     if (tile.loopAgent && cached.meta?.ptyId) {
-      window.yusepe.loop.bind(tile.loopAgent, cached.meta.ptyId);
+      window.yusepe.loop.bind(tile.loopAgent, cached.meta.ptyId, state.profile?.cwd);
     }
     return { root: cached.node, shutdown: () => {} };
   }
@@ -107,23 +108,50 @@ export async function createTerminalTile(tile, profileId) {
       });
       fit = new FitAddon();
       term.loadAddon(fit);
+
+      // OSC 52: el programa de adentro puede escribir el portapapeles con
+      // una secuencia de escape — es como copian Claude Code (selección
+      // propia con mouse capturado), tmux, nvim y las sesiones SSH
+      // remotas. Escribir va por el IPC de siempre; leer queda deshabilitado
+      // a propósito: cualquier proceso corriendo en la terminal podría
+      // exfiltrar el portapapeles con un printf.
+      term.loadAddon(new ClipboardAddon(undefined, {
+        writeText: (_sel, text) => window.yusepe.clipboard.writeText(text),
+        readText: () => Promise.resolve(''),
+      }));
       term.open(body);
       fit.fit();
 
-      // Copiar/pegar con Ctrl+Shift+C/V (Windows y Linux): ahí Ctrl+C es
-      // SIGINT, así que el atajo del menú (CmdOrCtrl+C) no sirve para copiar
-      // — y de hecho se lo tiene prohibido registrar fuera de macOS, ver
-      // main/index.js. xterm no trae ningún atajo de portapapeles propio.
+      // El pegado SIEMPRE pasa por term.paste(), nunca crudo al pty:
+      // xterm normaliza `\r\n` -> `\r` y envuelve en bracketed paste
+      // cuando el programa de adentro lo pidió (Claude Code, opencode…).
+      // Sin eso, cada salto de línea de un log pegado es un Enter dentro
+      // del TUI y el mensaje se parte en varios (verificado con sonda).
+      const pasteFromClipboard = () => {
+        navigator.clipboard.readText()
+          .then((t) => { if (t) term.paste(t); })
+          .catch(() => { /* sin permiso de lectura: no hay nada que pegar */ });
+      };
+
+      // Portapapeles estilo Windows Terminal. Ctrl+C con selección copia
+      // (y deselecciona); sin selección sigue siendo SIGINT — no se pierde
+      // la forma de interrumpir un proceso. Ctrl+Shift+C/V quedan como
+      // atajos explícitos: el del menú (CmdOrCtrl+C) no sirve para esto
+      // — se lo tiene prohibido registrar fuera de macOS, ver main/index.js
+      // — y xterm no trae ningún atajo de portapapeles propio.
       term.attachCustomKeyEventHandler((e) => {
-        if (e.type !== 'keydown' || !e.ctrlKey || !e.shiftKey) return true;
+        if (e.type !== 'keydown' || !e.ctrlKey || e.altKey) return true;
         const k = e.key.toLowerCase();
-        if (k === 'c') {
+        if (k === 'c' && !e.shiftKey) {
+          const sel = term.getSelection();
+          if (!sel) return true; // sin selección: SIGINT como siempre
+          window.yusepe.clipboard.writeText(sel);
+          term.clearSelection();
+        } else if (k === 'c' && e.shiftKey) {
           const sel = term.getSelection();
           if (sel) window.yusepe.clipboard.writeText(sel);
-        } else if (k === 'v') {
-          navigator.clipboard.readText()
-            .then((t) => { if (t && ptyId) window.yusepe.pty.input(ptyId, t); })
-            .catch(() => { /* sin permiso de lectura: no hay nada que pegar */ });
+        } else if (k === 'v' && e.shiftKey) {
+          pasteFromClipboard();
         } else {
           return true;
         }
@@ -131,10 +159,34 @@ export async function createTerminalTile(tile, profileId) {
         return false;
       });
 
+      // Copiar al seleccionar, como QuickEdit/Windows Terminal: soltar el
+      // mouse con algo seleccionado ya lo deja en el portapapeles, sin
+      // atajo. El debounce espera a que el arrastre termine — el evento
+      // dispara en cada movimiento — y saltea la selección vacía para no
+      // pisar el portapapeles al deseleccionar.
+      const copyOnSelect = debounce(() => {
+        const sel = term?.getSelection();
+        if (sel) window.yusepe.clipboard.writeText(sel);
+      }, 150);
+      term.onSelectionChange(copyOnSelect);
+
+      // Click derecho: copiar/pegar con menú nativo, como cualquier
+      // terminal de Windows. El pegado va por el mismo camino seguro.
+      body.addEventListener('contextmenu', async (e) => {
+        e.preventDefault();
+        const sel = term?.getSelection() || '';
+        const choice = await window.yusepe.menu.popup([
+          { id: 'copy', label: 'Copiar', enabled: !!sel },
+          { id: 'paste', label: 'Pegar' },
+        ]);
+        if (choice === 'copy' && sel) window.yusepe.clipboard.writeText(sel);
+        else if (choice === 'paste') pasteFromClipboard();
+      });
+
       // `agent` hace que el pty nazca con YBENTO_AGENT/YBENTO_ROOT en el
       // entorno, así el CLI `ybento` ya sabe quién es sin que el agente
       // tenga que pasar `--as` en cada comando. Ver main/loopShim.js.
-      const { ptyId: id } = await window.yusepe.pty.create({
+      const { ptyId: id, cwdMissing } = await window.yusepe.pty.create({
         cols: term.cols,
         rows: term.rows,
         cwd: tile.cwd || undefined,
@@ -164,6 +216,10 @@ export async function createTerminalTile(tile, profileId) {
       root._disposers = [() => ro.disconnect()];
 
       term.writeln('\x1b[2mInicializando shell…\x1b[0m');
+      if (cwdMissing) {
+        term.writeln(`\x1b[33mLa carpeta del workspace no existe: ${cwdMissing}\x1b[0m`);
+        term.writeln('\x1b[33mLa terminal arranca en tu carpeta de usuario.\x1b[0m');
+      }
       term.focus();
 
       // Terminal precargada: escribe el comando en el shell apenas arranca.
@@ -181,11 +237,26 @@ export async function createTerminalTile(tile, profileId) {
       liveTiles.register(tile.id, {
         profileId, kind: 'terminal', node: root, kill: killReal, meta: { fit, ptyId, term },
       });
+
+      // El mismo binding nombre→ptyId que la rama cached rehace al volver
+      // al workspace (línea 52), pero acá es la primera vez que nace la
+      // terminal: el dispatcher todavía no sabe a qué pty pegarle. Sin
+      // esto, los mensajes llegan al disco pero el dispatcher los descarta
+      // porque bindings.get(name) devuelve undefined.
+      if (tile.loopAgent) {
+        window.yusepe.loop.bind(tile.loopAgent, ptyId, state.profile?.cwd);
+      }
     } catch (err) {
+      // Sólo sugerir recompilar cuando el problema ES node-pty: para
+      // cualquier otro fallo ese consejo despista (p.ej. un cwd inválido).
+      const msg = String(err.message || err);
+      const hint = msg.includes('node-pty')
+        ? 'Ejecuta <code>npm run rebuild</code> para compilar node-pty.<br/>'
+        : '';
       body.innerHTML = `<div class="p-3 text-xs text-fg-muted">
         No se pudo iniciar la terminal.<br/>
-        Ejecuta <code>npm run rebuild</code> para compilar node-pty.<br/>
-        <pre class="mt-2 text-[10px] text-fg-subtle">${String(err.message || err)}</pre>
+        ${hint}
+        <pre class="mt-2 text-[10px] text-fg-subtle">${escapeHtml(msg)}</pre>
       </div>`;
       bus.emit('terminal:error', { tileId: tile.id, error: String(err.message || err) });
     }

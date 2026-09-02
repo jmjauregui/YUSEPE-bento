@@ -16,6 +16,7 @@ import os from 'os';
 import path from 'path';
 import { createDispatcher } from './loopDispatcher.js';
 import { getAgent, inbox, listMessages, markDelivered, postMessage, registerAgent, setAgentState } from './loopOps.js';
+import { createWriteQueue } from './ptyWriteQueue.js';
 
 let cwd;
 let writes;
@@ -80,14 +81,14 @@ describe('binding de agentes a terminales', () => {
   });
 
   it('normaliza el nombre al asociar', async () => {
-    dispatcher.bind('@Claudio', 'pty_1');
-    expect(dispatcher.boundAgents()).toEqual(['claudio']);
+    dispatcher.bind('@Claudio', 'pty_1', cwd);
+    expect(dispatcher.boundAgents(cwd)).toEqual(['claudio']);
   });
 
   it('unbind corta la entrega', async () => {
     start();
-    dispatcher.bind('claudio', 'pty_1');
-    dispatcher.unbind('claudio');
+    dispatcher.bind('claudio', 'pty_1', cwd);
+    dispatcher.unbind('claudio', cwd);
     await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'hola' });
 
     expect(await dispatcher.tick()).toEqual([]);
@@ -97,8 +98,8 @@ describe('binding de agentes a terminales', () => {
 describe('entrega', () => {
   beforeEach(() => {
     start();
-    dispatcher.bind('claudio', 'pty_claudio');
-    dispatcher.bind('opencito', 'pty_opencito');
+    dispatcher.bind('claudio', 'pty_claudio', cwd);
+    dispatcher.bind('opencito', 'pty_opencito', cwd);
   });
 
   it('pega el mensaje en la terminal correcta', async () => {
@@ -140,7 +141,8 @@ describe('entrega', () => {
     const { data } = writes.pastes[0];
     expect(data).toContain('@opencito');
     expect(data).toContain('@claudio');
-    expect(data).toContain('.ybento/loop/skill.md');
+    // path.join: en Windows la ruta viaja con `\`, en Unix con `/`.
+    expect(data).toContain(path.join('.ybento', 'loop', 'skill.md'));
   });
 
   it('cada agente recibe lo suyo', async () => {
@@ -201,7 +203,7 @@ describe('entrega', () => {
 describe('el gate de estado', () => {
   beforeEach(() => {
     start();
-    dispatcher.bind('claudio', 'pty_claudio');
+    dispatcher.bind('claudio', 'pty_claudio', cwd);
   });
 
   // La razón de ser de status.json: escribir en el pty de un agente que
@@ -240,7 +242,7 @@ describe('presencia del agente', () => {
       watchFs: false,
     });
     d.start(cwd);
-    d.bind('claudio', 'pty_claudio');
+    d.bind('claudio', 'pty_claudio', cwd);
     return { w, d };
   }
 
@@ -298,7 +300,7 @@ describe('presencia del agente', () => {
         writeToPty: w.write, probePty: probe, submitDelayMs: 0, pollMs: 60_000, watchFs: false,
       });
       d.start(cwd);
-      d.bind('claudio', 'pty_claudio');
+      d.bind('claudio', 'pty_claudio', cwd);
       try {
         await postMessage(cwd, { from: 'opencito', to: 'claudio', text: 'hola' });
         await d.tick();
@@ -321,7 +323,7 @@ describe('presencia del agente', () => {
       watchFs: false,
     });
     d.start(cwd);
-    d.bind('claudio', 'pty_claudio');
+    d.bind('claudio', 'pty_claudio', cwd);
 
     try {
       await postMessage(cwd, { from: 'opencito', to: 'claudio', text: 'uno' });
@@ -336,14 +338,14 @@ describe('presencia del agente', () => {
 
       // Un solo aviso de caída, no uno por vuelta del poll.
       expect(avisos.filter((a) => a.present === false)).toHaveLength(1);
-      expect(d.presence().claudio.present).toBe(false);
+      expect(d.presence(cwd).claudio.present).toBe(false);
     } finally { await d.dispose(); }
   });
 });
 
 describe('ciclo de vida', () => {
   it('sin start no reparte nada', async () => {
-    dispatcher.bind('claudio', 'pty_claudio');
+    dispatcher.bind('claudio', 'pty_claudio', cwd);
     await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'hola' });
 
     expect(await dispatcher.tick()).toEqual([]);
@@ -352,7 +354,7 @@ describe('ciclo de vida', () => {
 
   it('stop corta la entrega', async () => {
     start();
-    dispatcher.bind('claudio', 'pty_claudio');
+    dispatcher.bind('claudio', 'pty_claudio', cwd);
     dispatcher.stop();
 
     await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'hola' });
@@ -363,7 +365,7 @@ describe('ciclo de vida', () => {
     const otro = await fs.mkdtemp(path.join(os.tmpdir(), 'yusepe-dispatch-otro-'));
     try {
       await registerAgent(otro, { name: 'claudio' });
-      dispatcher.bind('claudio', 'pty_claudio');
+      dispatcher.bind('claudio', 'pty_claudio', cwd);
 
       start();
       dispatcher.start(otro);
@@ -390,7 +392,7 @@ describe('ciclo de vida', () => {
       writeToPty: writes.write, submitDelayMs: 0, pollMs: 150, watchFs: true,
     });
     start();
-    dispatcher.bind('claudio', 'pty_claudio');
+    dispatcher.bind('claudio', 'pty_claudio', cwd);
     await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'automático' });
 
     // Sin tick() explícito: lo tiene que disparar el watch o el poll.
@@ -413,10 +415,93 @@ describe('ciclo de vida', () => {
 
   it('dos vueltas simultáneas no entregan el mismo mensaje dos veces', async () => {
     start();
-    dispatcher.bind('claudio', 'pty_claudio');
+    dispatcher.bind('claudio', 'pty_claudio', cwd);
     await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'una sola vez' });
 
     await Promise.all([dispatcher.tick(), dispatcher.tick(), dispatcher.tick()]);
     expect(writes.pastes).toHaveLength(1);
   });
+});
+
+// Regresión H7: si whenIdleForPty nunca resuelve (pty muerto sin cerrar la
+// cola), el cinturón de idleTimeoutMs garantiza que el reparto no se cuelgue.
+describe('tolerancia a fallos del drenaje (cinturón)', () => {
+  it('tick termina y entrega a los demás agentes aunque whenIdleForPty no resuelva', async () => {
+    // whenIdleForPty que NUNCA resuelve para pty_claudio
+    const d = createDispatcher({
+      writeToPty: writes.write,
+      whenIdleForPty: (ptyId) => (ptyId === 'pty_claudio' ? new Promise(() => {}) : Promise.resolve()),
+      idleTimeoutMs: 50, // pequeño para que el test no tarde
+      submitDelayMs: 0,
+      pollMs: 60_000,
+      watchFs: false,
+    });
+    d.start(cwd);
+    d.bind('claudio', 'pty_claudio', cwd);
+    d.bind('opencito', 'pty_opencito', cwd);
+
+    await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'para claudio' });
+    await postMessage(cwd, { from: 'usuario', to: 'opencito', text: 'para opencito' });
+
+    try {
+      await d.tick(); // debe terminar en ~50 ms, no colgarse
+      // opencito debe haber recibido su mensaje aunque claudio bloqueó
+      expect(writes.pastes.filter((w) => w.ptyId === 'pty_opencito')).toHaveLength(1);
+    } finally {
+      await d.dispose();
+    }
+  }, 5_000);
+});
+
+// Usa reloj real: verifica que el \r espere el drenaje completo + submitDelay.
+// El doble instantáneo del beforeEach no puede cubrir esto — exactamente el
+// bug que se reportó: para mensajes > 2550 chars el sleep empezaba mientras
+// la cola aún drenaba, y el \r llegaba sólo 5 ms después del último chunk.
+describe('sincronización del Enter con el drenaje de la cola', () => {
+  it('el \\r llega después del drenaje completo + submitDelay para mensajes grandes', async () => {
+    const submitDelayMs = 30;
+    // 500 chars → 10 chunks → 9 intervalos × 5 ms = 45 ms de drenaje > submitDelayMs.
+    // Se suma el texto del encabezado de formatForTerminal (~80 chars),
+    // así que en la práctica son ~12 chunks y ~55 ms de drenaje.
+    const bigText = 'x'.repeat(500);
+
+    // Escrituras reales al "pty" (timestamps del nivel writeFn)
+    const physLog = [];
+    const writer = createWriteQueue((data) => physLog.push({ data, ts: Date.now() }));
+
+    const testCwd = await fs.mkdtemp(path.join(os.tmpdir(), 'yusepe-drain-test-'));
+    const testDispatcher = createDispatcher({
+      writeToPty: (_ptyId, data) => writer.write(data),
+      whenIdleForPty: (_ptyId) => writer.whenIdle(),
+      submitDelayMs,
+      pollMs: 60_000,
+      watchFs: false,
+    });
+    try {
+      await registerAgent(testCwd, { name: 'claudio', role: 'codifica' });
+      testDispatcher.start(testCwd);
+      testDispatcher.bind('claudio', 'pty_1', testCwd);
+
+      await postMessage(testCwd, { from: 'usuario', to: 'claudio', text: bigText });
+      await testDispatcher.tick();
+
+      // Debe haber al menos 2 escrituras físicas: algún chunk de texto y el \r.
+      expect(physLog.length).toBeGreaterThanOrEqual(2);
+
+      const enterIdx = physLog.findLastIndex((w) => w.data === '\r');
+      expect(enterIdx).toBeGreaterThan(0);
+
+      // El \r es el último write
+      expect(enterIdx).toBe(physLog.length - 1);
+
+      // Gap entre el último chunk de texto y el \r >= submitDelayMs:
+      // el sleep empieza DESPUÉS del drenaje, no mientras drena.
+      const lastTextTs = physLog[enterIdx - 1].ts;
+      const enterTs = physLog[enterIdx].ts;
+      expect(enterTs - lastTextTs).toBeGreaterThanOrEqual(submitDelayMs);
+    } finally {
+      await testDispatcher.dispose();
+      await fs.rm(testCwd, { recursive: true, force: true });
+    }
+  }, 10_000);
 });
