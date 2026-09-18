@@ -26,6 +26,8 @@ import { h } from '../utils/dom.js';
 import { svgIcon } from '../utils/icons.js';
 import { state } from '../core/state.js';
 import { bus } from '../core/eventBus.js';
+import { applyAgentOrder, pressOutcome, insertionIndex, trackPress, crossingMoves, shouldReorder, HOLD_MS, SLOP_PX } from '../core/agentOrder.js';
+import { createOrderLoader } from '../core/orderLoader.js';
 import { openModal, closeModal, confirmModal } from './modal.js';
 import { ProfileManager } from '../core/profileManager.js';
 import * as liveTiles from '../core/liveTiles.js';
@@ -131,6 +133,18 @@ let composerNoAgentsEl = null;
 let renderedIds = [];
 let renderedSig = null;
 
+/* Orden de las pills guardado por el usuario.
+ * Se carga al entrar al workspace (una sola lectura de disco, no en cada poll). */
+let agentOrder = { cwd: null, names: [] };
+
+/* Arrastre activo: no-null sólo mientras el usuario sostiene una pill. */
+let dragState = null;
+
+/* Estado pendiente: pointerdown en curso, antes de que venza el timer de HOLD_MS.
+ * renderPills lo respeta igual que dragState para no destruir la pill bajo el dedo.
+ * Todas las salidas del gesto pasan por endDrag, que lo limpia con pressState.abort(). */
+let pressState = null;
+
 /* ---------- Modo del loop: un loop a la vez vs. simultáneos ---------- */
 
 const LOOP_MODE_KEY = 'yusepe:loop-mode';
@@ -173,12 +187,28 @@ let lastNotifiedAt = 0;
 
 const cwd = () => state.profile?.cwd || null;
 
+function orderFor(c) {
+  return agentOrder.cwd === c ? agentOrder.names : [];
+}
+
+const loadOrder = createOrderLoader({
+  getCwd: cwd,
+  fetchOrder: (c) => window.yusepe.loop.getOrder(c),
+  onLoaded: ({ cwd: c, names }) => { agentOrder = { cwd: c, names }; },
+});
+
 export function initLoopSidebar() {
   panelEl = document.getElementById('loop-sidebar');
   if (!panelEl) return;
 
   applySavedWidth(panelEl, WIDTH_OPTS);
   buildChrome();
+
+  // Escape y pérdida de foco terminan cualquier arrastre activo.
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && (dragState || pressState)) { e.preventDefault(); endDrag(false); }
+  });
+  window.addEventListener('blur', () => { if (dragState || pressState) endDrag(false); });
 
   // El repartidor vive en main y vigila el disco: se arranca al entrar a un
   // workspace y se corta al salir, tenga o no el panel abierto — el loop
@@ -190,12 +220,16 @@ export function initLoopSidebar() {
     renderedSig = null;
     // No notificar mensajes que ya existían al abrir el workspace.
     lastNotifiedAt = Date.now();
+    // Cargar el orden guardado para este workspace (una lectura de disco).
+    loadOrder();
     if (cwd()) window.yusepe.loop.start(cwd());
     // Restaurar el estado abierto/cerrado guardado para este workspace.
     if (savedOpenState(state.profile?.id)) openSidebar();
     else closeSidebar();
   });
   bus.on('workspace:left', () => {
+    // Si hay un arrastre (o presión pendiente) en curso, terminarlo antes de cambiar.
+    if (dragState || pressState) endDrag(false);
     // Guardar el estado actual antes de salir, para restaurarlo al volver.
     persistOpenState(state.profile?.id, isOpen);
     // En modo "un loop a la vez", detener el dispatcher de este workspace.
@@ -261,11 +295,14 @@ function openSidebar() {
   isOpen = true;
   persistOpenState(state.profile?.id, true);
   panelEl.classList.remove('hidden');
-  refresh();
+  // Recargar el orden al abrir el panel (cubre el caso de que el workspace
+  // estuviera cargado pero el panel cerrado cuando se guardó el orden).
+  loadOrder().then(() => refresh());
 }
 
 function closeSidebar() {
   if (!panelEl) return;
+  if (dragState || pressState) endDrag(false);
   isOpen = false;
   persistOpenState(state.profile?.id, false);
   panelEl.classList.add('hidden');
@@ -319,9 +356,10 @@ async function refresh() {
       window.yusepe.loop.messages(cwd(), { limit: 200 }),
       window.yusepe.loop.presence(cwd()),
     ]);
-    renderRoster(agents, presence || {});
-    renderStream(messages, agents);
-    renderComposer(agents);
+    const ordered = applyAgentOrder(agents, orderFor(cwd()));
+    renderRoster(ordered, presence || {});
+    renderStream(messages, ordered);
+    renderComposer(ordered);
   } catch (err) {
     streamEl.innerHTML = '';
     // Sincronizar el estado con el DOM que acabamos de vaciar.
@@ -752,20 +790,100 @@ function ensureComposerBox() {
 }
 
 /**
+ * Termina el arrastre activo (o la presión pendiente). Es la ÚNICA función que
+ * pone dragState = null y pressState = null.
+ *
+ * Todas las salidas del gesto pasan por acá:
+ *   pointerup (con y sin cambio), pointercancel, lostpointercapture,
+ *   Escape, blur de ventana, cierre del panel, cambio de workspace.
+ *
+ * `commit = true`  → leer el DOM y guardar si el orden cambió.
+ * `commit = false` → descartar (el DOM se reconstruye con el orden anterior).
+ */
+async function endDrag(commit) {
+  if (!dragState && !pressState) return;
+
+  // Cancelar el timer y limpiar el estado pendiente si existe.
+  if (pressState) { pressState.abort(); pressState = null; }
+
+  if (!dragState) {
+    // No repintar: si el gesto fue un tap, el click que llega después lo repinta.
+    // Si fue cancel/Escape/blur, el poll repinta en ≤1,5 s como mucho.
+    // (Repintar aquí hace innerHTML='' dentro del pointerup y destruye la pill
+    // antes de que Chromium despache el click — H16.)
+    return;
+  }
+
+  const { pillEl, preOrderNames } = dragState;
+  dragState = null;
+
+  // Quitar el estado visual de "levantada".
+  pillEl.style.transform = '';
+  pillEl.style.boxShadow = '';
+  pillEl.style.cursor = '';
+  pillEl.style.zIndex = '';
+  pillEl.style.position = '';
+
+  if (commit && pillsContainerEl && cwd()) {
+    const domNames = Array.from(pillsContainerEl.children)
+      .map((el) => el.textContent.trim().replace(/^@/, ''));
+
+    // applyAgentOrder garantiza que agentes llegados durante el drag queden
+    // al final y que agentes que se fueron no aparezcan.
+    const newOrdered = applyAgentOrder(currentAgents, domNames);
+    const newNames = newOrdered.map((a) => a.name);
+
+    // Lo que se mostraba antes del drag (mismo cálculo que refresh usó).
+    const prevNames = applyAgentOrder(currentAgents, preOrderNames).map((a) => a.name);
+
+    if (newNames.join(',') !== prevNames.join(',')) {
+      agentOrder = { cwd: cwd(), names: newNames };
+      try {
+        await window.yusepe.loop.setOrder(cwd(), newNames);
+      } catch {
+        toast.error('No se pudo guardar el orden de las pills — al reiniciar volverá el orden anterior');
+      }
+      refresh(); // actualiza el roster con el nuevo orden
+    }
+  }
+
+  // currentAgents = lista más reciente (puede incluir un agente sumado durante
+  // el drag si dirty se marcó).
+  renderPills(currentAgents);
+}
+
+/**
  * Repinta sólo las pills y actualiza placeholder y etiqueta del botón.
  * El textarea no se toca: el caret, el borrador y el historial sobreviven.
+ *
+ * currentAgents SE ASIGNA ANTES DEL CORTE para que send() siempre tenga
+ * la lista al día aunque el repintado quede suspendido por un drag.
  */
 function renderPills(agents) {
-  currentAgents = agents;
+  currentAgents = agents; // SIEMPRE primero: send() lo necesita al día
 
   // Re-targetear si el destino ya no está en el loop.
   if (!agents.some((a) => a.name === target)) target = agents[0]?.name || null;
 
+  // H13: actualizar placeholder y botón aunque el DOM quede suspendido, para
+  // que "Enviar a @x" refleje siempre el destinatario actual.
+  if (composerInput) composerInput.placeholder = `Mensaje para @${target}…  (Enter envía)`;
+  if (composerSendBtn) {
+    const span = composerSendBtn.querySelector('span');
+    if (span) span.textContent = `Enviar a @${target}`;
+  }
+
+  // Durante un arrastre (o presión pendiente) el DOM pertenece al gesto;
+  // marcar dirty para repintar cuando termine.
+  if (dragState || pressState) { if (dragState) dragState.dirty = true; return; }
+
+  if (!pillsContainerEl) return;
+
   pillsContainerEl.innerHTML = '';
   for (const agent of agents) {
-    pillsContainerEl.append(h('button', {
+    const pill = h('button', {
       class: [
-        'text-[10px] px-1.5 py-0.5 rounded-full border transition',
+        'text-[10px] px-1.5 py-0.5 rounded-full border transition select-none',
         agent.name === target
           ? 'bg-accent/20 border-accent/40 text-fg'
           : 'border-line hover:bg-bg-elev',
@@ -774,23 +892,135 @@ function renderPills(agents) {
         ? null
         : `color: color-mix(in srgb, ${colorOf(agent)} 75%, var(--color-fg))`,
       title: clampRole(agent.role) || `Escribirle a @${agent.name}`,
-      onClick: () => {
-        target = agent.name;
-        // currentAgents, no agents: puede haber llegado un agente nuevo entre
-        // el render de estas pills y el momento del click.
-        renderPills(currentAgents);
-        composerInput?.focus();
-      },
-    }, `@${agent.name}`));
-  }
+    }, `@${agent.name}`);
 
-  if (composerInput) {
-    composerInput.placeholder = `Mensaje para @${target}…  (Enter envía)`;
+    attachPillGesture(pill, agent);
+    pillsContainerEl.append(pill);
   }
-  if (composerSendBtn) {
-    const span = composerSendBtn.querySelector('span');
-    if (span) span.textContent = `Enviar a @${target}`;
-  }
+}
+
+/**
+ * Adjunta el gesto de puntero a una pill.
+ *
+ * Tres resultados posibles:
+ *   'tap'    → pointerdown + pointerup sin moverse ni llegar al segundo
+ *   'cancel' → se movió más de SLOP_PX antes del segundo
+ *   'lift'   → aguantó el segundo → drag
+ *
+ * El resultado se guarda en pill._gestureOutcome y se reinicia en cada
+ * pointerdown. No hay bandera pegajosa que espere al click: si el puntero
+ * se suelta fuera de la pill y el click nunca llega, el valor viejo se pisa
+ * en el próximo pointerdown.
+ */
+function attachPillGesture(pill, agent) {
+  let pressData = null;
+
+  pill.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    pill.setPointerCapture(e.pointerId);
+    pill._gestureOutcome = null; // reiniciar en cada pointerdown
+
+    const pointerId = e.pointerId;
+    const startX = e.clientX;
+    const startY = e.clientY;
+
+    pressData = {
+      pointerId,
+      startX,
+      startY,
+      movedPx: 0,
+      lifted: false,
+      timer: setTimeout(() => {
+        if (!pressData || pressData.pointerId !== pointerId) return;
+        // H11(i): si el poll destruyó la pill durante la espera, no crear dragState.
+        if (!pill.isConnected) { pressData = null; pressState = null; return; }
+        pressData.lifted = true;
+        pill.style.transform = 'scale(1.08)';
+        pill.style.boxShadow = '0 4px 12px rgba(0,0,0,0.3)';
+        pill.style.cursor = 'grabbing';
+        pill.style.zIndex = '50';
+        pill.style.position = 'relative';
+        dragState = {
+          pillEl: pill,
+          pointerId,
+          preOrderNames: [...orderFor(cwd())], // H14: snapshot del workspace actual
+          dirty: false,
+          lastReorderPt: null, // histéresis: punto del último reordenamiento
+        };
+      }, HOLD_MS),
+    };
+
+    // H11(ii): registrar el estado pendiente desde el pointerdown para que
+    // renderPills no destruya la pill durante el segundo de espera.
+    pressState = { abort: () => { clearTimeout(pressData?.timer); pressData = null; } };
+  });
+
+  pill.addEventListener('pointermove', (e) => {
+    if (!pressData || e.pointerId !== pressData.pointerId) return;
+
+    const dx = e.clientX - pressData.startX;
+    const dy = e.clientY - pressData.startY;
+    pressData.movedPx = trackPress(pressData.movedPx, dx, dy);
+
+    // Cancelar el timer si se movió demasiado antes del segundo.
+    if (!pressData.lifted && pressData.movedPx > SLOP_PX) {
+      clearTimeout(pressData.timer);
+      pressData.timer = null;
+    }
+
+    // Reordenar las otras pills durante el arrastre (v2: la pill capturada NO se mueve).
+    if (dragState?.pillEl === pill && pillsContainerEl) {
+      const otherPills = Array.from(pillsContainerEl.children).filter((el) => el !== pill);
+      const rects = otherPills.map((el) => {
+        const r = el.getBoundingClientRect();
+        return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, width: r.width, height: r.height };
+      });
+      const nuevo = insertionIndex(rects, { x: e.clientX, y: e.clientY });
+      const point = { x: e.clientX, y: e.clientY };
+      if (shouldReorder(point, dragState.lastReorderPt)) {
+        const moves = crossingMoves([...pillsContainerEl.children], pill, nuevo);
+        if (moves.length) {
+          for (const mv of moves) pillsContainerEl.insertBefore(mv.node, mv.before);
+          dragState.lastReorderPt = point;
+        }
+      }
+    }
+  });
+
+  pill.addEventListener('pointerup', (e) => {
+    if (!pressData || e.pointerId !== pressData.pointerId) return;
+    // Capturar antes de que endDrag limpie pressData vía pressState.abort().
+    const pd = pressData;
+    pill._gestureOutcome = pressOutcome({ lifted: pd.lifted, movedPx: pd.movedPx });
+    endDrag(dragState?.pillEl === pill);
+  });
+
+  pill.addEventListener('pointercancel', (e) => {
+    if (!pressData || e.pointerId !== pressData.pointerId) return;
+    pill._gestureOutcome = 'cancel';
+    endDrag(false);
+  });
+
+  pill.addEventListener('lostpointercapture', (e) => {
+    if (!pressData || e.pointerId !== pressData.pointerId) return;
+    endDrag(false);
+  });
+
+  pill.addEventListener('click', (e) => {
+    // Activación por teclado (Enter / Espacio): e.detail === 0.
+    if (e.detail === 0) {
+      target = agent.name;
+      renderPills(currentAgents);
+      composerInput?.focus();
+      return;
+    }
+    // Activación por puntero: sólo si el gesto fue un tap limpio.
+    if (pill._gestureOutcome === 'tap') {
+      target = agent.name;
+      renderPills(currentAgents);
+      composerInput?.focus();
+    }
+  });
 }
 
 function renderComposer(agents) {

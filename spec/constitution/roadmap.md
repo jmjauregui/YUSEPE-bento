@@ -34,6 +34,7 @@ _(vacío — definir la próxima feature en `tasks.md` raíz antes de crear la c
 23. **023 · fix: Se pierde la selección del hilo** — `renderStream` pasa a render incremental keyado por `msg.id`: se appendea solo lo nuevo en vez de rehacer las 200 filas. La selección sobrevive y se puede copiar del hilo.
 24. **025 · fix: Mensajes entre agentes quedan escritos pero sin enviar** — el Enter llegaba dentro de la ventana de pegado del TUI en mensajes de más de 2550 chars: `whenIdle()` en `createWriteQueue` + `Promise.race` en el dispatcher, para que espere al drenaje real (e229f21). Incluye la regresión que introdujo ese mismo fix — `dispose()` dejaba los `whenIdle()` sin resolver y colgaba el reparto entero del workspace — cerrada con `notifyIdle()` en `clear()` y el cinturón `IDLE_TIMEOUT_MS` (9cf2501).
 25. **027 · fix: Instrumentación pasiva B1/B2 para diagnosticar truncamiento** — `loopDiag.js` con ventana de captura acotada a la entrega; `ybento diag @agente` imprime veredicto en texto. El bug de truncamiento sigue abierto; esta entrada cierra la instrumentación (ae6aaac).
+26. **028 · feature: Reordenar las pills de agentes con drag and drop** — mantener 1 s una pill la levanta y se arrastra a otra posición; el roster sigue el mismo orden. El orden se guarda por proyecto en `.ybento/config/loop.json`. La pill arrastrada nunca se mueve en el DOM (se corren las otras, `crossingMoves`), así no pierde la captura del puntero; el repintado del panel se suspende desde el pointerdown.
 
 ## Backlog / ideas 💡
 

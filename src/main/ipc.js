@@ -23,6 +23,7 @@ import { buildPtyEnv, ensureShim } from './loopShim.js';
 import { createWriteQueue } from './ptyWriteQueue.js';
 import { SnippetsStore } from './snippetsOps.js';
 import * as diag from './loopDiag.js';
+import * as projectConfig from './projectConfigOps.js';
 
 // Carga pty de forma perezosa: si falla (p.ej. sin recompilar)
 // no rompemos el arranque de la app.
@@ -402,6 +403,9 @@ export function registerIpc({ app, profilesDir }) {
     return true;
   });
 
+  ipcMain.handle('loop:order-get', (_e, { cwd }) => projectConfig.readAgentOrder(cwd));
+  ipcMain.handle('loop:order-set', (_e, { cwd, names }) => projectConfig.writeAgentOrder(cwd, names));
+
   ipcMain.handle('loop:start', (event, { cwd }) => {
     loopSender = event.sender;
     dispatcher.start(cwd);
@@ -484,6 +488,7 @@ export function registerIpc({ app, profilesDir }) {
       'loop:messages', 'loop:post', 'loop:inbox',
       'loop:skill', 'loop:set-skill', 'loop:ensure-skill',
       'loop:bind', 'loop:unbind', 'loop:start', 'loop:stop', 'loop:presence', 'loop:at-prompt',
+      'loop:order-get', 'loop:order-set',
     ]) ipcMain.removeHandler(channel);
   };
 

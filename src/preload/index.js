@@ -144,6 +144,9 @@ contextBridge.exposeInMainWorld('yusepe', {
     onDelivered: (handler) => on('loop:delivered', handler),
     onChanged: (handler) => on('loop:changed', handler),
     onPresence: (handler) => on('loop:presence', handler),
+
+    getOrder: (cwd) => ipcRenderer.invoke('loop:order-get', { cwd }),
+    setOrder: (cwd, names) => ipcRenderer.invoke('loop:order-set', { cwd, names }),
   },
 
   snippets: {
