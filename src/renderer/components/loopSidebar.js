@@ -27,6 +27,7 @@ import { svgIcon } from '../utils/icons.js';
 import { state } from '../core/state.js';
 import { bus } from '../core/eventBus.js';
 import { applyAgentOrder, pressOutcome, insertionIndex, trackPress, crossingMoves, shouldReorder, HOLD_MS, SLOP_PX } from '../core/agentOrder.js';
+import { isAbsent, isStuck, rowFlags, rosterAlert, createRosterAccordion } from '../core/rosterAccordion.js';
 import { createOrderLoader } from '../core/orderLoader.js';
 import { openModal, closeModal, confirmModal } from './modal.js';
 import { ProfileManager } from '../core/profileManager.js';
@@ -111,6 +112,9 @@ const expanded = new Set();
 
 let panelEl = null;
 let rosterEl = null;
+let rosterBtnEl = null;
+let lastRosterAlert = null;
+let accordion = null;
 let streamEl = null;
 let composerEl = null;
 let emptyEl = null;
@@ -295,6 +299,7 @@ function openSidebar() {
   isOpen = true;
   persistOpenState(state.profile?.id, true);
   panelEl.classList.remove('hidden');
+  accordion?.open();
   // Recargar el orden al abrir el panel (cubre el caso de que el workspace
   // estuviera cargado pero el panel cerrado cuando se guardó el orden).
   loadOrder().then(() => refresh());
@@ -303,6 +308,7 @@ function openSidebar() {
 function closeSidebar() {
   if (!panelEl) return;
   if (dragState || pressState) endDrag(false);
+  accordion?.close();
   isOpen = false;
   persistOpenState(state.profile?.id, false);
   panelEl.classList.add('hidden');
@@ -322,8 +328,16 @@ function buildChrome() {
     h('span', {}, 'Loop'),
   ]);
 
+  rosterBtnEl = h('button', {
+    class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg px-1 shrink-0',
+    'aria-expanded': 'true',
+    title: 'Agentes del loop',
+    onClick: () => accordion?.toggle(),
+  }, svgIcon('agents', { size: 14 }));
+
   const header = h('div', { class: 'flex items-center gap-1.5 px-2 py-1.5 border-b border-line shrink-0' }, [
     title,
+    rosterBtnEl,
     h('button', {
       class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg px-1 shrink-0',
       title: 'Protocolo que leen los agentes (.ybento/loop/skill.md)',
@@ -336,7 +350,33 @@ function buildChrome() {
     }, svgIcon('close', { size: 15 })),
   ]);
 
-  rosterEl = h('div', { class: 'shrink-0 border-b border-line px-1.5 py-1.5' });
+  rosterEl = h('div', {
+    id: 'loop-roster',
+    class: 'shrink-0 border-b border-line px-1.5 py-1.5',
+  });
+  rosterBtnEl.setAttribute('aria-controls', 'loop-roster');
+
+  // El roster nunca se cierra por un evento — sólo al vencer la cuenta con
+  // isHeld() false. mouseleave y focusout sólo rearman a 5 s (release).
+  rosterEl.addEventListener('mouseleave', () => accordion?.release());
+  rosterEl.addEventListener('focusout', (e) => {
+    if (!rosterEl.contains(e.relatedTarget)) accordion?.release();
+  });
+
+  accordion = createRosterAccordion({
+    isHeld: () => rosterEl.matches(':hover') || rosterEl.contains(document.activeElement),
+    onChange: (open) => {
+      if (open) {
+        rosterEl.classList.remove('hidden');
+      } else {
+        rosterEl.classList.add('hidden');
+      }
+      rosterBtnEl.setAttribute('aria-expanded', String(open));
+      // Actualizar el punto inmediatamente al cambiar estado, sin esperar el poll.
+      applyAlertDot(lastRosterAlert, open);
+    },
+  });
+
   streamEl = h('div', { class: 'flex-1 overflow-y-auto px-2 py-2 space-y-2' });
   emptyEl = h('div', { class: 'hidden px-3 py-6 text-center text-[11px] text-fg-subtle leading-relaxed' });
   composerEl = h('div', { class: 'shrink-0 border-t border-line p-2' });
@@ -396,8 +436,8 @@ function stateDot(agent, presence) {
 }
 
 /** Hace cuánto que no cambia de estado, en texto corto. */
-function sinceLabel(iso) {
-  const ms = Date.now() - new Date(iso).getTime();
+function sinceLabel(iso, now) {
+  const ms = now - new Date(iso).getTime();
   if (!Number.isFinite(ms) || ms < 0) return '';
   const min = Math.floor(ms / 60000);
   if (min < 1) return 'recién';
@@ -405,15 +445,24 @@ function sinceLabel(iso) {
   return `hace ${Math.floor(min / 60)} h`;
 }
 
-/**
- * A partir de acá, un agente en `working` probablemente se colgó o murió a
- * mitad de la tarea. No se toca solo — se avisa y se ofrece liberarlo,
- * porque un agente que de verdad está trabajando duro no debería perder su
- * turno por un umbral arbitrario.
- */
-const STUCK_WORKING_MS = 15 * 60 * 1000;
+/** Pinta o borra el punto de alerta en el botón del acordeón. */
+function applyAlertDot(alert, rosterOpen) {
+  if (!rosterBtnEl) return;
+  const existing = rosterBtnEl.querySelector('[data-alert-dot]');
+  if (existing) existing.remove();
+  if (!alert || rosterOpen) return;
+  const colorClass = alert === 'red' ? 'bg-red-400' : 'bg-amber-400';
+  const dot = h('span', {
+    'data-alert-dot': '',
+    class: `absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full ${colorClass}`,
+  });
+  rosterBtnEl.style.position = 'relative';
+  rosterBtnEl.append(dot);
+}
 
 function renderRoster(agents, presence = {}) {
+  // Un solo `now` para filas y punto — C5: "exactamente el mismo".
+  const now = Date.now();
   rosterEl.innerHTML = '';
 
   if (!agents.length) {
@@ -421,29 +470,50 @@ function renderRoster(agents, presence = {}) {
       'Ninguna terminal está en el loop todavía.'));
   }
 
-  for (const agent of agents) rosterEl.append(agentRow(agent, presence[agent.name]));
+  for (const agent of agents) rosterEl.append(agentRow(agent, presence[agent.name], now));
 
   rosterEl.append(h('button', {
     class: 'w-full mt-1 text-[11px] px-2 py-1.5 rounded-md border border-line hover:bg-bg-elev transition text-fg-muted',
     onClick: openAddAgent,
   }, '+ Sumar una terminal al loop'));
+
+  // Actualizar el punto del botón del acordeón — flujo de datos, nunca toca
+  // el controlador (criterio 4 de la spec).
+  if (rosterBtnEl) {
+    const alert = rosterAlert(agents, presence, now);
+    lastRosterAlert = alert;
+
+    let label = 'Agentes del loop';
+    if (alert === 'red') {
+      const count = agents.filter((a) => isAbsent(presence[a.name])).length;
+      label += ` — ${count} ${count === 1 ? 'agente no recibe' : 'agentes no reciben'}`;
+    } else if (alert === 'amber') {
+      const count = agents.filter((a) => isStuck(a, now)).length;
+      label += ` — ${count} ${count === 1 ? 'agente trabado' : 'agentes trabados'}`;
+    }
+    // Sólo reescribir si cambió — evita pelea con tooltip.js, que roba el
+    // `title` en el hover y no lo devuelve hasta que el puntero salga.
+    if (rosterBtnEl.getAttribute('aria-label') !== label) {
+      rosterBtnEl.setAttribute('aria-label', label);
+      rosterBtnEl.setAttribute('title', label);
+    }
+    applyAlertDot(alert, accordion?.isOpen);
+  }
 }
 
-function agentRow(agent, presence) {
+function agentRow(agent, presence, now) {
   const tile = (state.profile?.tiles || []).find((t) => t.id === agent.tileId);
-  const absent = presence?.present === false;
-  const stuck = agent.state === 'working'
-    && Date.now() - new Date(agent.updatedAt).getTime() > STUCK_WORKING_MS;
+  const { subtitle: problem, showRelease: stuck } = rowFlags(agent, presence, now);
 
   // Segunda línea: normalmente el rol, pero si algo anda mal eso pasa a ser
   // lo importante — un rol prolijo no sirve de nada si el agente está caído.
   let subtitle;
-  if (absent) {
+  if (problem === 'absent') {
     subtitle = h('div', { class: 'text-[10px] text-red-400/90 truncate' },
       `terminal en el prompt (${presence.foreground}) — no recibe`);
-  } else if (stuck) {
+  } else if (problem === 'stuck') {
     subtitle = h('div', { class: 'text-[10px] text-amber-400/90 truncate' },
-      `ocupado ${sinceLabel(agent.updatedAt)} — ¿se colgó?`);
+      `ocupado ${sinceLabel(agent.updatedAt, now)} — ¿se colgó?`);
   } else if (agent.role) {
     subtitle = h('div', { class: 'text-[10px] text-fg-subtle truncate' }, agent.role);
   } else {
