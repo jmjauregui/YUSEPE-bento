@@ -37,6 +37,7 @@ import { labelFor } from './workspaceManager.js';
 import { applySavedWidth, makeResizeHandle } from '../utils/resizableSidebar.js';
 import { toast } from './toast.js';
 import { notifyUserMessage } from '../core/loopNotify.js';
+import { createCopyFeedback } from '../core/copyFeedback.js';
 
 const WIDTH_OPTS = {
   storageKey: 'yusepe:loop-width',
@@ -700,6 +701,7 @@ function messageRow(msg, colors = {}) {
       forMe ? ' → vos' : ` → @${msg.to}`]
       : who),
     h('span', { class: 'text-fg-subtle/60 shrink-0' }, formatTime(msg.createdAt)),
+    copyButton(msg),
   ]);
 
   const parts = [header, body];
@@ -712,7 +714,7 @@ function messageRow(msg, colors = {}) {
   // en tema claro y oscuro.
   const bubble = h('div', {
     class: [
-      'max-w-[85%] rounded-lg px-2.5 py-1.5 border',
+      'group max-w-[85%] rounded-lg px-2.5 py-1.5 border',
       mine
         ? 'bg-accent/15 border-accent/30'
         : (forMe ? 'bg-bg-elev border-accent/20' : 'bg-bg-elev border-line'),
@@ -753,6 +755,32 @@ function collapseToggle(msg, body) {
 
   paint();
   return button;
+}
+
+function copyButton(msg) {
+  const feedback = createCopyFeedback({
+    onState(state) {
+      const icon = state === 'done' ? 'check' : state === 'failed' ? 'warning' : 'copy';
+      const label = state === 'done' ? 'Copiado' : state === 'failed' ? 'No se pudo copiar' : 'Copiar mensaje';
+      btn.title = label;
+      btn.setAttribute('aria-label', label);
+      btn.replaceChildren(svgIcon(icon));
+      if (state === 'failed') toast.error('No se pudo copiar el mensaje');
+    },
+  });
+
+  const btn = h('button', {
+    class: 'ml-auto inline-flex items-center justify-center w-5 h-5 rounded text-fg-subtle hover:text-fg transition opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 select-none',
+    'aria-label': 'Copiar mensaje',
+    title: 'Copiar mensaje',
+  }, [svgIcon('copy')]);
+
+  btn.addEventListener('mousedown', e => e.preventDefault());
+  btn.addEventListener('click', () => {
+    feedback.run(() => window.yusepe.clipboard.writeText(msg.text));
+  });
+
+  return btn;
 }
 
 function formatTime(iso) {
