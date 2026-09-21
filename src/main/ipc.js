@@ -384,8 +384,8 @@ export function registerIpc({ app, profilesDir }) {
 
   ipcMain.handle('loop:messages', (_e, { cwd, to, limit }) =>
     loopOps.listMessages(cwd, { to, limit }));
-  ipcMain.handle('loop:post', (_e, { cwd, from, to, text, replyTo }) =>
-    loopOps.postMessage(cwd, { from: from || 'usuario', to, text, replyTo }));
+  ipcMain.handle('loop:post', (_e, { cwd, from, to, text, replyTo, seenUpTo }) =>
+    loopOps.postMessage(cwd, { from: from || 'usuario', to, text, replyTo, seenUpTo }));
   ipcMain.handle('loop:inbox', (_e, { cwd, name }) => loopOps.inbox(cwd, name));
 
   ipcMain.handle('loop:skill', (_e, { cwd }) => loopOps.readSkill(cwd));

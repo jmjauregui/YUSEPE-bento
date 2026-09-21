@@ -284,10 +284,27 @@ export async function readDirty(cwd) {
 }
 
 /**
+ * Resuelve el `seenUpTo` para mensajes del usuario.
+ *
+ * - Id válido (existe en `all`) → ese mismo id.
+ * - Ausente, no-string o inexistente → el último id del archivo
+ *   ("estaba al día"); sin aviso de cruce.
+ * - Archivo vacío → null (no hay nada que haya podido cruzar).
+ *
+ * Un id inválido nunca devuelve null para un archivo no vacío:
+ * null haría que crossedMessages cortara desde el principio y
+ * produciría la lista completa, que es el bug original.
+ */
+export function resolveUserSeenUpTo(all, requested) {
+  if (typeof requested === 'string' && all.some((m) => m.id === requested)) return requested;
+  return all.length ? all[all.length - 1].id : null;
+}
+
+/**
  * Postea un mensaje. `from` puede ser un agente o `usuario` (el humano
  * escribiendo desde el panel lateral).
  */
-export async function postMessage(cwd, { from, to, text, replyTo = null } = {}) {
+export async function postMessage(cwd, { from, to, text, replyTo = null, seenUpTo: seenUpToParam } = {}) {
   const body = String(text ?? '').trim();
   if (!body) throw new Error('El mensaje no puede estar vacío');
 
@@ -297,9 +314,15 @@ export async function postMessage(cwd, { from, to, text, replyTo = null } = {}) 
   // Con esto se detectan los cruces: si A responde algo que fue escrito
   // antes de recibir el último mensaje de B, los dos hablaron a la vez y
   // ninguno de los dos se entera mirando sólo el texto.
-  const seenUpTo = sender === 'usuario'
-    ? null
-    : (await getAgent(cwd, sender))?.cursor ?? null;
+  // Para el usuario, se valida el id que manda la cabina contra el archivo.
+  // Para un agente, sigue siendo su cursor (el parámetro se ignora).
+  let seenUpTo;
+  if (sender === 'usuario') {
+    const all = await listMessages(cwd);
+    seenUpTo = resolveUserSeenUpTo(all, seenUpToParam);
+  } else {
+    seenUpTo = (await getAgent(cwd, sender))?.cursor ?? null;
+  }
 
   const message = {
     id: makeId(),
@@ -359,13 +382,12 @@ export async function listMessages(cwd, { to = null, limit = 0 } = {}) {
 }
 
 /**
- * Mensajes que el autor de `message` todavía no había recibido cuando lo
- * escribió — o sea, los que se cruzaron en el camino.
+ * Mensajes que "se cruzaron en el camino": los que el destinatario de
+ * `message` le mandó al autor, y que el autor no había visto cuando escribió.
+ * Es decir, los dos se escribieron a la vez.
  *
- * Pasa de verdad y es invisible: dos agentes deciden lo mismo a la vez, o
- * uno responde una pregunta que el otro ya había contestado. Mirando sólo
- * el texto no hay forma de darse cuenta; comparando contra hasta dónde
- * había leído cada uno, sí.
+ * "Del destinatario" es clave: un mensaje de un tercero no es un cruce del
+ * par, aunque llegara antes. El filtro `m.from === message.to` lo garantiza.
  *
  * @param {object[]} all todos los mensajes, en orden (con su `seq`)
  */
@@ -378,7 +400,8 @@ export function crossedMessages(all, message) {
     ? all.findIndex((m) => m.id === message.seenUpTo)
     : -1;
 
-  return all.slice(seenIdx + 1, mine).filter((m) => m.to === message.from);
+  return all.slice(seenIdx + 1, mine)
+    .filter((m) => m.to === message.from && m.from === message.to);
 }
 
 /**
@@ -601,6 +624,8 @@ export async function ensureSkill(cwd) {
  * agente ve el mensaje entrecomillado, que es un precio ridículo al lado
  * de ejecución arbitraria de comandos.
  */
+const CROSSED_SHOWN = 5;
+
 export function formatForTerminal(message, {
   skillPath = SKILL_FILE, crossed = [], head = null,
 } = {}) {
@@ -626,10 +651,17 @@ export function formatForTerminal(message, {
   // Si se cruzaron, decirlo acá es lo único que lo hace evidente a tiempo:
   // el que recibe puede reconciliar antes de contestar, en vez de descubrir
   // el desencuentro tres mensajes después.
+  // Tope: los CROSSED_SHOWN más recientes + "(y K anteriores)" para que el
+  // aviso no infle el mensaje aunque algo vuelva a producir una lista enorme.
   if (crossed.length) {
+    const hidden = crossed.length - CROSSED_SHOWN;
+    const shown = hidden > 0 ? crossed.slice(-CROSSED_SHOWN) : crossed;
+    const suffix = hidden > 0
+      ? ` (y ${hidden} ${hidden === 1 ? 'anterior' : 'anteriores'})`
+      : '';
     notes.push(`lo escribió sin haber visto ${crossed.length === 1
-      ? `tu mensaje #${crossed[0].seq}`
-      : `tus mensajes ${crossed.map((m) => `#${m.seq}`).join(', ')}`}`);
+      ? `tu mensaje #${shown[0].seq}`
+      : `tus mensajes ${shown.map((m) => `#${m.seq}`).join(', ')}${suffix}`}`);
   }
 
   // Desfase de código: el mensaje describe el árbol como estaba en ese

@@ -827,7 +827,7 @@ function ensureComposerBox() {
     composerInput.value = '';
     composerInput._reset?.();
     try {
-      await window.yusepe.loop.post(cwd(), { from: 'usuario', to, text });
+      await window.yusepe.loop.post(cwd(), { from: 'usuario', to, text, seenUpTo: renderedIds.at(-1) ?? null });
       target = to;
       await refresh();
     } catch (err) {

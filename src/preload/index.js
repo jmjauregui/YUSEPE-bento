@@ -120,8 +120,8 @@ contextBridge.exposeInMainWorld('yusepe', {
     setState: (cwd, name, state) => ipcRenderer.invoke('loop:set-state', { cwd, name, state }),
 
     messages: (cwd, opts = {}) => ipcRenderer.invoke('loop:messages', { cwd, ...opts }),
-    post: (cwd, { from, to, text, replyTo }) =>
-      ipcRenderer.invoke('loop:post', { cwd, from, to, text, replyTo }),
+    post: (cwd, { from, to, text, replyTo, seenUpTo }) =>
+      ipcRenderer.invoke('loop:post', { cwd, from, to, text, replyTo, seenUpTo }),
     inbox: (cwd, name) => ipcRenderer.invoke('loop:inbox', { cwd, name }),
 
     skill: (cwd) => ipcRenderer.invoke('loop:skill', { cwd }),
