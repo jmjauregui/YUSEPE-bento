@@ -40,6 +40,11 @@ _(vacío — definir la próxima feature en `tasks.md` raíz antes de crear la c
 29. **032 · feature: Copiar un mensaje del hilo** — ícono en el encabezado de cada mensaje que copia su texto completo (sin encabezado ni hora), alcanzable con Tab y sin romper la selección (dd08d7c).
 30. **033 · fix: Tooltips de la topbar** — los íconos junto a "Agregar" perdían su tooltip al abrir un workspace; el texto vive ahora en `data-label` y el `title` nunca queda vacío (a9ee452).
 
+31. **029 · fix: El aviso de cruce ya no lista todos los mensajes al usuario** — la cabina sella cada mensaje con el último que mostraba, y el aviso corta en 5 (3a444f6).
+32. **034 · feature: Scroll vertical del workspace** — el grid scrollea cuando las filas ya no entran, con autoscroll al arrastrar y al estirar, coordenadas corregidas y barra del mismo diseño que la de xterm (6b54d5d).
+33. **035 · feature: Redimensionar un tile desde cualquier borde** — izquierda, arriba y las cuatro esquinas, resolviendo el crecimiento por espejo sobre las funciones ya testeadas del grid (6b54d5d).
+34. **036 · feature: Observador de inactividad del loop** — mide la salida de cada terminal y avisa a un agente designado (o al usuario) cuando el loop se frenó; umbral configurable, un aviso por episodio, nunca escribe en un pty (a7ed33e).
+
 ## Backlog / ideas 💡
 
 - **Loop: chunking de mensajes largos** — se descartó en sesión 2025-08; el usuario prefiere pasar el mensaje completo sin fragmentar.
