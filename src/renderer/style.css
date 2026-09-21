@@ -127,25 +127,40 @@
   opacity: 0;
 }
 
-.xterm-viewport::-webkit-scrollbar {
+.xterm-viewport::-webkit-scrollbar,
+.bento-grid::-webkit-scrollbar {
   width: 10px;
 }
-.xterm-viewport::-webkit-scrollbar-track {
+.xterm-viewport::-webkit-scrollbar-track,
+.bento-grid::-webkit-scrollbar-track {
   background: transparent;
 }
-.xterm-viewport::-webkit-scrollbar-thumb {
+.xterm-viewport::-webkit-scrollbar-thumb,
+.bento-grid::-webkit-scrollbar-thumb {
   background-color: rgb(255 255 255 / 0.22);
   border-radius: 10px;
   border: 2px solid transparent;
   background-clip: content-box;
   min-height: 32px;
 }
-.xterm-viewport::-webkit-scrollbar-thumb:hover {
+.xterm-viewport::-webkit-scrollbar-thumb:hover,
+.bento-grid::-webkit-scrollbar-thumb:hover {
   background-color: rgb(255 255 255 / 0.4);
 }
 .xterm-viewport::-webkit-scrollbar-button,
-.xterm-viewport::-webkit-scrollbar-corner {
+.xterm-viewport::-webkit-scrollbar-corner,
+.bento-grid::-webkit-scrollbar-button,
+.bento-grid::-webkit-scrollbar-corner {
   display: none;
+}
+
+/* Tema claro: el grid tiene fondo claro; píldora negra translúcida sólo en el grid. */
+/* Se apunta al pseudo-elemento directo para no heredar a .xterm-viewport. */
+:root[data-theme='light'] .bento-grid::-webkit-scrollbar-thumb {
+  background-color: rgb(0 0 0 / 0.22);
+}
+:root[data-theme='light'] .bento-grid::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(0 0 0 / 0.4);
 }
 
 @layer base {
@@ -162,6 +177,8 @@
     gap: 8px;
     height: 100%;
     background: var(--color-bg);
+    overflow-y: auto;
+    scrollbar-gutter: stable;
   }
 
   /* Marca de agua del logo YUSEPE Bento: al ser position:absolute no es un
@@ -506,6 +523,79 @@
   .tile-handle-br:hover {
     background: rgb(var(--color-accent-rgb) / 0.32);
     border-top-left-radius: 4px;
+  }
+
+  /* Left edge (starts below the move grip) */
+  .tile-handle-l {
+    position: absolute;
+    left: 0;
+    top: 28px;
+    bottom: 16px;
+    width: 5px;
+    z-index: 20;
+    cursor: ew-resize;
+  }
+  .tile-handle-l:hover {
+    background: rgb(var(--color-accent-rgb) / 0.28);
+  }
+
+  /* Top edge (starts to the right of the move grip) */
+  .tile-handle-t {
+    position: absolute;
+    top: 0;
+    left: 28px;
+    right: 16px;
+    height: 5px;
+    z-index: 20;
+    cursor: ns-resize;
+  }
+  .tile-handle-t:hover {
+    background: rgb(var(--color-accent-rgb) / 0.28);
+  }
+
+  /* Top-left corner: 8×8 over the move grip */
+  .tile-handle-tl {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 8px;
+    height: 8px;
+    z-index: 22;
+    cursor: nwse-resize;
+  }
+  .tile-handle-tl:hover {
+    background: rgb(var(--color-accent-rgb) / 0.32);
+    border-bottom-right-radius: 4px;
+  }
+
+  /* Top-right corner */
+  .tile-handle-tr {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 16px;
+    height: 16px;
+    z-index: 21;
+    cursor: nesw-resize;
+  }
+  .tile-handle-tr:hover {
+    background: rgb(var(--color-accent-rgb) / 0.32);
+    border-bottom-left-radius: 4px;
+  }
+
+  /* Bottom-left corner */
+  .tile-handle-bl {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 16px;
+    height: 16px;
+    z-index: 21;
+    cursor: nesw-resize;
+  }
+  .tile-handle-bl:hover {
+    background: rgb(var(--color-accent-rgb) / 0.32);
+    border-top-right-radius: 4px;
   }
 
   /* ---- Preview de Markdown (tile Explorador) ---- */

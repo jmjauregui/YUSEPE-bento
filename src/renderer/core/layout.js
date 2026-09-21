@@ -256,6 +256,106 @@ function tryRowSize(tiles, tile, col, row, colSpan, rs) {
   return noOverlapsWith(tiles, overrides) ? pushes : null;
 }
 
+/* ===================== Scroll del workspace (034) ===================== */
+
+/**
+ * Celda bajo un punto relativo al borde visible del grid,
+ * corrigiendo el scrollTop para que el drop caiga donde está el puntero.
+ */
+export function pointToCell({ x, y, scrollTop, colStep, rowStep }) {
+  return {
+    col: Math.max(1, Math.floor(x / colStep) + 1),
+    row: Math.max(1, Math.floor((y + scrollTop) / rowStep) + 1),
+  };
+}
+
+/**
+ * Filas recorridas desde el inicio de un resize, contando el scroll.
+ * Sin scroll es idéntico a Math.round(dy / rowHeight).
+ */
+export function rowDelta({ startY, startScroll, y, scroll, rowHeight }) {
+  return Math.round(((y + scroll) - (startY + startScroll)) / rowHeight);
+}
+
+/**
+ * Velocidad de autoscroll según qué tan cerca está el puntero del borde.
+ * Negativo = scroll hacia arriba, positivo = hacia abajo, 0 = zona muerta.
+ * Proporcional a la profundidad, con tope en maxStep.
+ */
+export function autoScrollStep(y, top, bottom, { edge = 40, maxStep = 20 } = {}) {
+  if (y < top + edge) {
+    const depth = top + edge - y;
+    return -Math.min(maxStep, Math.round((depth / edge) * maxStep));
+  }
+  if (y > bottom - edge) {
+    const depth = y - (bottom - edge);
+    return Math.min(maxStep, Math.round((depth / edge) * maxStep));
+  }
+  return 0;
+}
+
+/* ===================== Redimensionar desde borde opuesto (035) ===================== */
+
+function mirrorCol(col, colSpan, gridCols) {
+  return gridCols - (col + colSpan - 1) + 1;
+}
+
+function mirrorRow(row, rowSpan, pivot) {
+  return pivot - (row + rowSpan - 1) + 1;
+}
+
+/**
+ * Igual que `resolveColGrowth` pero crece hacia la izquierda: refleja el grid,
+ * llama a resolveColGrowth, y refleja el resultado de vuelta.
+ * Devuelve `{ col, colSpan, pushed: [{ tile, col, colSpan }] }` en coords reales.
+ */
+export function resolveColGrowthLeft(tiles, tileId, desiredCS, gridCols = GRID_COLS) {
+  const tile = tiles.find((t) => t.id === tileId);
+  if (!tile) return null;
+  const rightBorder = (tile.col || 1) + (tile.colSpan || 1) - 1;
+  const mirrored = tiles.map((t) => ({
+    ...t,
+    col: mirrorCol(t.col || 1, t.colSpan || 1, gridCols),
+  }));
+  const r = resolveColGrowth(mirrored, tileId, desiredCS, gridCols);
+  if (!r) return null;
+  return {
+    col: rightBorder - r.colSpan + 1,
+    colSpan: r.colSpan,
+    pushed: r.pushed.map((p) => {
+      const realTile = tiles.find((t) => t.id === p.tile.id);
+      return { tile: realTile, col: realTile.col || 1, colSpan: p.colSpan };
+    }),
+  };
+}
+
+/**
+ * Igual que `resolveRowGrowth` pero crece hacia arriba. Limita el crecimiento
+ * al borde de abajo del tile (no puede crecer más allá de la fila 1).
+ * Devuelve `{ row, rowSpan, pushed: [{ tile, row, rowSpan }] }` en coords reales.
+ */
+export function resolveRowGrowthUp(tiles, tileId, desiredRS) {
+  const tile = tiles.find((t) => t.id === tileId);
+  if (!tile) return null;
+  const bottomBorder = (tile.row || 1) + (tile.rowSpan || 1) - 1;
+  const capped = Math.min(desiredRS, bottomBorder);
+  const pivot = tiles.reduce((mx, t) => Math.max(mx, (t.row || 1) + (t.rowSpan || 1) - 1), 0);
+  const mirrored = tiles.map((t) => ({
+    ...t,
+    row: mirrorRow(t.row || 1, t.rowSpan || 1, pivot),
+  }));
+  const r = resolveRowGrowth(mirrored, tileId, capped);
+  if (!r) return null;
+  return {
+    row: bottomBorder - r.rowSpan + 1,
+    rowSpan: r.rowSpan,
+    pushed: r.pushed.map((p) => {
+      const realTile = tiles.find((t) => t.id === p.tile.id);
+      return { tile: realTile, row: realTile.row || 1, rowSpan: p.rowSpan };
+    }),
+  };
+}
+
 /* ===================== Navegación espacial (teclado) ===================== */
 
 function centerOf(t) {
