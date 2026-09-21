@@ -11,6 +11,7 @@ import {
   rowFlags,
   rosterAlert,
   createRosterAccordion,
+  observerOptionsSignature,
 } from './rosterAccordion.js';
 
 /* ============================================================
@@ -216,5 +217,42 @@ describe('rosterAlert', () => {
 
   it('lista vacía → null', () => {
     expect(rosterAlert([], {}, NOW)).toBe(null);
+  });
+});
+
+/* ============================================================
+   observerOptionsSignature — firma del selector de designado
+   ============================================================ */
+
+describe('observerOptionsSignature', () => {
+  const ags = (names) => names.map((n) => ({ name: n }));
+
+  it('misma lista y mismo designado → misma firma (opciones no se rehacen)', () => {
+    const a = ags(['claudio', 'coord']);
+    expect(observerOptionsSignature(a, 'coord')).toBe(observerOptionsSignature(a, 'coord'));
+  });
+
+  it('designado cambia → firma distinta', () => {
+    const a = ags(['claudio', 'coord']);
+    expect(observerOptionsSignature(a, 'coord')).not.toBe(observerOptionsSignature(a, 'claudio'));
+  });
+
+  it('misma cantidad pero un nombre distinto → firma distinta', () => {
+    const a1 = ags(['claudio', 'coord']);
+    const a2 = ags(['claudio', 'impl']);
+    expect(observerOptionsSignature(a1, null)).not.toBe(observerOptionsSignature(a2, null));
+  });
+
+  it('mismo conjunto en orden distinto → firma distinta', () => {
+    const a1 = ags(['claudio', 'coord']);
+    const a2 = ags(['coord', 'claudio']);
+    expect(observerOptionsSignature(a1, null)).not.toBe(observerOptionsSignature(a2, null));
+  });
+
+  it("sin separador entre nombres colisionan: ['ab','c'] vs ['a','bc'] → firmas distintas", () => {
+    // Con join('') ambas listas producirían 'abc|' — el separador ',' lo evita.
+    const a1 = ags(['ab', 'c']);
+    const a2 = ags(['a', 'bc']);
+    expect(observerOptionsSignature(a1, null)).not.toBe(observerOptionsSignature(a2, null));
   });
 });

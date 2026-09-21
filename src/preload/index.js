@@ -147,6 +147,11 @@ contextBridge.exposeInMainWorld('yusepe', {
 
     getOrder: (cwd) => ipcRenderer.invoke('loop:order-get', { cwd }),
     setOrder: (cwd, names) => ipcRenderer.invoke('loop:order-set', { cwd, names }),
+
+    // 036: observador de inactividad
+    setObserver: (thresholdMs) => ipcRenderer.invoke('loop:set-observer', { thresholdMs }),
+    getObserverAgent: (cwd) => ipcRenderer.invoke('loop:get-observer-agent', { cwd }),
+    setObserverAgent: (cwd, name) => ipcRenderer.invoke('loop:set-observer-agent', { cwd, name }),
   },
 
   snippets: {

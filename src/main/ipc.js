@@ -230,6 +230,8 @@ export function registerIpc({ app, profilesDir }) {
   // -------- PTY / Terminal --------
   /** Mapa de ptyId -> { proc, senderId } */
   const ptys = new Map();
+  // Cuándo imprimió por última vez cada terminal. Memoria del observador (036).
+  const lastDataAtMap = new Map();
   let ptySeq = 0;
 
   ipcMain.handle('pty:create', async (event, { cols, rows, cwd, shell, agent, loopRoot } = {}) => {
@@ -277,6 +279,7 @@ export function registerIpc({ app, profilesDir }) {
     if (agent) dispatcher.bind(agent, ptyId);
 
     proc.onData((data) => {
+      lastDataAtMap.set(ptyId, Date.now()); // 036: señal del observador
       // Reenviamos solo al webContents que creó esta pty
       if (!event.sender.isDestroyed()) {
         event.sender.send(`pty:data:${ptyId}`, data);
@@ -284,6 +287,7 @@ export function registerIpc({ app, profilesDir }) {
     });
 
     proc.onExit(({ exitCode }) => {
+      lastDataAtMap.delete(ptyId); // 036: limpiar señal
       if (!event.sender.isDestroyed()) {
         event.sender.send(`pty:exit:${ptyId}`, exitCode);
       }
@@ -360,6 +364,7 @@ export function registerIpc({ app, profilesDir }) {
     onDelivered: (info) => notifyLoop('loop:delivered', info),
     onChange: () => notifyLoop('loop:changed', {}),
     onPresence: (info) => notifyLoop('loop:presence', info),
+    lastDataAt: (ptyId) => lastDataAtMap.get(ptyId) ?? null, // 036
   });
 
   ipcMain.handle('loop:agents', (_e, { cwd }) => loopOps.listAgents(cwd));
@@ -405,6 +410,16 @@ export function registerIpc({ app, profilesDir }) {
 
   ipcMain.handle('loop:order-get', (_e, { cwd }) => projectConfig.readAgentOrder(cwd));
   ipcMain.handle('loop:order-set', (_e, { cwd, names }) => projectConfig.writeAgentOrder(cwd, names));
+
+  // 036: umbral y designado del observador de inactividad
+  ipcMain.handle('loop:set-observer', (_e, { thresholdMs } = {}) => {
+    dispatcher.setObserverThreshold(thresholdMs ?? null);
+    return true;
+  });
+  ipcMain.handle('loop:get-observer-agent', (_e, { cwd } = {}) =>
+    projectConfig.readObserverAgent(cwd));
+  ipcMain.handle('loop:set-observer-agent', (_e, { cwd, name } = {}) =>
+    projectConfig.writeObserverAgent(cwd, name));
 
   ipcMain.handle('loop:start', (event, { cwd }) => {
     loopSender = event.sender;
@@ -489,6 +504,7 @@ export function registerIpc({ app, profilesDir }) {
       'loop:skill', 'loop:set-skill', 'loop:ensure-skill',
       'loop:bind', 'loop:unbind', 'loop:start', 'loop:stop', 'loop:presence', 'loop:at-prompt',
       'loop:order-get', 'loop:order-set',
+      'loop:set-observer', 'loop:get-observer-agent', 'loop:set-observer-agent', // 036
     ]) ipcMain.removeHandler(channel);
   };
 

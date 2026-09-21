@@ -69,6 +69,17 @@ export function rosterAlert(agents, presenceByName, now) {
 }
 
 /**
+ * Firma de las opciones del selector de designado.
+ * Incluye los nombres en orden y el designado: cualquier cambio real produce
+ * una firma distinta, y la misma lista con la misma selección produce la misma.
+ * @param {{ name: string }[]} agents
+ * @param {string|null} observerAgent
+ */
+export function observerOptionsSignature(agents, observerAgent) {
+  return agents.map((a) => a.name).join(',') + '|' + (observerAgent ?? '');
+}
+
+/**
  * Controlador de la cuenta regresiva del acordeón.
  *
  * @param {object} opts

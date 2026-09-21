@@ -27,7 +27,7 @@ import { svgIcon } from '../utils/icons.js';
 import { state } from '../core/state.js';
 import { bus } from '../core/eventBus.js';
 import { applyAgentOrder, pressOutcome, insertionIndex, trackPress, crossingMoves, shouldReorder, HOLD_MS, SLOP_PX } from '../core/agentOrder.js';
-import { isAbsent, isStuck, rowFlags, rosterAlert, createRosterAccordion } from '../core/rosterAccordion.js';
+import { isAbsent, isStuck, rowFlags, rosterAlert, createRosterAccordion, observerOptionsSignature } from '../core/rosterAccordion.js';
 import { createOrderLoader } from '../core/orderLoader.js';
 import { openModal, closeModal, confirmModal } from './modal.js';
 import { ProfileManager } from '../core/profileManager.js';
@@ -38,6 +38,7 @@ import { applySavedWidth, makeResizeHandle } from '../utils/resizableSidebar.js'
 import { toast } from './toast.js';
 import { notifyUserMessage } from '../core/loopNotify.js';
 import { createCopyFeedback } from '../core/copyFeedback.js';
+import { pushObserverThreshold } from '../core/observerSettings.js';
 
 const WIDTH_OPTS = {
   storageKey: 'yusepe:loop-width',
@@ -138,9 +139,18 @@ let composerNoAgentsEl = null;
 let renderedIds = [];
 let renderedSig = null;
 
+/* Nodo persistente del selector de designado (036, corrección del desplegable) */
+let rosterListEl = null;         // sub-div que renderRoster vacía y rehace
+let observerSelectEl = null;     // <select> que nunca se destruye
+let observerSig = null;          // última firma con la que se dibujaron las opciones
+let pendingObserverUpdate = null; // { sig, agents } esperando a que el select pierda el foco
+
 /* Orden de las pills guardado por el usuario.
  * Se carga al entrar al workspace (una sola lectura de disco, no en cada poll). */
 let agentOrder = { cwd: null, names: [] };
+
+/* Agente designado para recibir avisos del observador en este workspace. */
+let observerAgent = null;
 
 /* Arrastre activo: no-null sólo mientras el usuario sostiene una pill. */
 let dragState = null;
@@ -227,7 +237,16 @@ export function initLoopSidebar() {
     lastNotifiedAt = Date.now();
     // Cargar el orden guardado para este workspace (una lectura de disco).
     loadOrder();
-    if (cwd()) window.yusepe.loop.start(cwd());
+    // Resetear el designado; se carga async al entrar al workspace.
+    observerAgent = null;
+    if (cwd()) {
+      window.yusepe.loop.getObserverAgent(cwd()).then((name) => {
+        observerAgent = name;
+        if (isOpen) refresh();
+      }).catch(() => {});
+      pushObserverThreshold();
+      window.yusepe.loop.start(cwd());
+    }
     // Restaurar el estado abierto/cerrado guardado para este workspace.
     if (savedOpenState(state.profile?.id)) openSidebar();
     else closeSidebar();
@@ -323,6 +342,7 @@ function buildChrome() {
   currentAgents = []; composerBoxEl = null; pillsContainerEl = null;
   composerInput = null; composerSendBtn = null; composerNoAgentsEl = null;
   renderedIds = []; renderedSig = null;
+  rosterListEl = null; observerSelectEl = null; observerSig = null; pendingObserverUpdate = null;
 
   const title = h('div', { class: 'text-xs text-fg-soft flex-1 flex items-center gap-1.5' }, [
     h('span', { class: 'text-accent-soft flex items-center' }, svgIcon('loop', { size: 14 })),
@@ -356,6 +376,32 @@ function buildChrome() {
     class: 'shrink-0 border-b border-line px-1.5 py-1.5',
   });
   rosterBtnEl.setAttribute('aria-controls', 'loop-roster');
+
+  // Sub-nodos persistentes: rosterListEl se vacía en cada poll, observerSelectEl no.
+  rosterListEl = h('div', {});
+  observerSelectEl = h('select', {
+    class: 'mt-2 w-full text-[11px] px-2 py-1 rounded-md border border-line bg-bg text-fg-soft cursor-pointer hidden',
+  });
+  observerSelectEl.addEventListener('change', () => {
+    const name = observerSelectEl.value || null;
+    observerAgent = name;
+    // Actualizar la firma para que el próximo poll no rehaga las opciones innecesariamente.
+    observerSig = observerOptionsSignature(
+      Array.from(observerSelectEl.options).slice(1).map((o) => ({ name: o.value })),
+      name,
+    );
+    window.yusepe.loop.setObserverAgent(cwd(), name).catch((err) => {
+      toast.error(`No se pudo guardar el agente designado: ${err?.message ?? String(err)}`);
+    });
+    refresh();
+  });
+  observerSelectEl.addEventListener('blur', () => {
+    if (pendingObserverUpdate) {
+      const { sig, agents } = pendingObserverUpdate;
+      applyObserverOptions(agents, sig);
+    }
+  });
+  rosterEl.append(rosterListEl, observerSelectEl);
 
   // El roster nunca se cierra por un evento — sólo al vencer la cuenta con
   // isHeld() false. mouseleave y focusout sólo rearman a 5 s (release).
@@ -461,22 +507,54 @@ function applyAlertDot(alert, rosterOpen) {
   rosterBtnEl.append(dot);
 }
 
+/** Rehace las <option> del selector persistente y actualiza la firma. */
+function applyObserverOptions(agents, sig) {
+  observerSig = sig;
+  pendingObserverUpdate = null;
+  while (observerSelectEl.firstChild) observerSelectEl.removeChild(observerSelectEl.firstChild);
+  const optNone = h('option', { value: '' }, 'Avisos a: ninguno');
+  optNone.selected = !observerAgent;
+  observerSelectEl.append(optNone);
+  for (const a of agents) {
+    const opt = h('option', { value: a.name }, `Avisos a: @${a.name}`);
+    if (a.name === observerAgent) opt.selected = true;
+    observerSelectEl.append(opt);
+  }
+  if (agents.length > 0) observerSelectEl.classList.remove('hidden');
+  else observerSelectEl.classList.add('hidden');
+}
+
+/** Actualiza el selector sólo cuando la firma cambia; aplaza si el select tiene foco. */
+function updateObserverSelect(agents) {
+  if (!observerSelectEl) return;
+  const sig = observerOptionsSignature(agents, observerAgent);
+  if (sig === observerSig) return;
+  if (observerSelectEl === document.activeElement) {
+    pendingObserverUpdate = { sig, agents };
+    return;
+  }
+  applyObserverOptions(agents, sig);
+}
+
 function renderRoster(agents, presence = {}) {
   // Un solo `now` para filas y punto — C5: "exactamente el mismo".
   const now = Date.now();
-  rosterEl.innerHTML = '';
+  rosterListEl.innerHTML = '';
 
   if (!agents.length) {
-    rosterEl.append(h('p', { class: 'text-[10px] text-fg-subtle px-1.5 py-1 leading-relaxed' },
+    rosterListEl.append(h('p', { class: 'text-[10px] text-fg-subtle px-1.5 py-1 leading-relaxed' },
       'Ninguna terminal está en el loop todavía.'));
   }
 
-  for (const agent of agents) rosterEl.append(agentRow(agent, presence[agent.name], now));
+  for (const agent of agents) rosterListEl.append(agentRow(agent, presence[agent.name], now));
 
-  rosterEl.append(h('button', {
+  rosterListEl.append(h('button', {
     class: 'w-full mt-1 text-[11px] px-2 py-1.5 rounded-md border border-line hover:bg-bg-elev transition text-fg-muted',
     onClick: openAddAgent,
   }, '+ Sumar una terminal al loop'));
+
+  // Actualizar el selector persistente sólo si la firma cambió (y sin cerrarlo).
+  updateObserverSelect(agents);
 
   // Actualizar el punto del botón del acordeón — flujo de datos, nunca toca
   // el controlador (criterio 4 de la spec).
@@ -539,9 +617,17 @@ function agentRow(agent, presence, now) {
     stateDot(agent, presence),
     h('div', { class: 'flex-1 min-w-0' }, [
       h('div', {
-        class: 'text-xs truncate font-medium',
+        class: 'text-xs truncate font-medium flex items-center gap-0.5',
         style: `color: color-mix(in srgb, ${tint} 75%, var(--color-fg))`,
-      }, `@${agent.name}`),
+      }, [
+        `@${agent.name}`,
+        ...(agent.name === observerAgent
+          ? [h('span', {
+            class: 'ml-0.5 text-[9px] text-fg-subtle shrink-0',
+            title: 'Agente designado para avisos del observador',
+          }, '◉')]
+          : []),
+      ]),
       subtitle,
     ]),
     h('div', { class: 'hidden group-hover:flex gap-0.5 shrink-0' }, [

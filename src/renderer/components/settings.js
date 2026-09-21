@@ -12,6 +12,7 @@ import { getTheme, applyTheme } from '../core/theme.js';
 import { buildWallpaperSection } from './wallpaperPicker.js';
 import { SOUNDS, getSound, setSound, playSound } from '../core/loopNotify.js';
 import { getLoopMode, setLoopMode } from './loopSidebar.js';
+import { OBSERVER_KEY, OBSERVER_DEFAULT_MS, setObserverThreshold } from '../core/observerSettings.js';
 
 export function openSettings() {
   function themeButton(mode, iconName, label) {
@@ -124,12 +125,59 @@ export function openSettings() {
     ]);
   }
 
+  function buildObserverSection() {
+    const OPTIONS = [
+      { value: null, label: 'Desactivado' },
+      { value: 300, label: '5 minutos' },
+      { value: OBSERVER_DEFAULT_MS / 1000, label: `${OBSERVER_DEFAULT_MS / 60_000} minutos (predeterminado)` },
+      { value: 900, label: '15 minutos' },
+      { value: 1800, label: '30 minutos' },
+      { value: 3600, label: '60 minutos' },
+    ];
+
+    let current = (() => {
+      const v = localStorage.getItem(OBSERVER_KEY);
+      if (v === 'null') return null;
+      const n = parseInt(v, 10);
+      return (Number.isFinite(n) && n > 0) ? n : OBSERVER_DEFAULT_MS / 1000;
+    })();
+
+    const rows = OPTIONS.map((opt) => {
+      const radio = h('input', {
+        type: 'radio',
+        name: 'observer-threshold',
+        value: String(opt.value),
+        class: 'w-3 h-3 cursor-pointer',
+        style: 'accent-color: var(--color-accent)',
+      });
+      if (String(current) === String(opt.value)) radio.checked = true;
+
+      radio.addEventListener('change', () => {
+        current = opt.value;
+        setObserverThreshold(opt.value);
+      });
+
+      return h('label', {
+        class: 'flex items-center gap-2 py-1 cursor-pointer select-none',
+      }, [radio, h('span', { class: 'text-xs text-fg' }, opt.label)]);
+    });
+
+    return h('div', {}, [
+      h('span', { class: 'text-sm text-fg block mb-1' }, 'Observador del loop'),
+      h('p', { class: 'text-[11px] text-fg-subtle mb-2 leading-relaxed' },
+        'Avisa si el loop lleva este tiempo sin actividad visible en alguna terminal.'),
+      h('div', { class: 'space-y-0.5' }, rows),
+    ]);
+  }
+
   const body = h('div', {}, [
     themeRow,
     h('div', { class: 'border-t border-line my-4' }),
     buildLoopModeSection(),
     h('div', { class: 'border-t border-line my-4' }),
     buildSoundSection(),
+    h('div', { class: 'border-t border-line my-4' }),
+    buildObserverSection(),
     h('div', { class: 'border-t border-line my-4' }),
     h('label', { class: 'text-sm text-fg block mb-1' }, 'Fondo de este espacio'),
     buildWallpaperSection(),

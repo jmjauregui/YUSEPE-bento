@@ -1,11 +1,10 @@
 /**
  * src/main/projectConfigOps.js
  * --------------------------------------------------------------
- * Lee y escribe .ybento/config/loop.json: el orden de las pills de agentes.
+ * Lee y escribe .ybento/config/loop.json: orden de pills y agente designado.
  *
- * El renderer pide por IPC; nunca toca disco.
- * Escritura atómica con sufijo único por escritura (pid + contador) para que
- * dos escrituras seguidas en el mismo proceso no compartan archivo temporal.
+ * Escritura con patrón leer-mezclar-escribir, en fila por ruta (fileChains):
+ * dos escrituras simultáneas de campos distintos no se pisan.
  * --------------------------------------------------------------
  */
 import { promises as fs } from 'fs';
@@ -19,6 +18,17 @@ const MAX_NAMES = 200;
 const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
 let _writeCounter = 0;
+
+// Cadena de promesas por ruta absoluta: serializa escrituras al mismo archivo.
+const fileChains = new Map();
+
+function chainFor(filePath) {
+  return fileChains.get(filePath) ?? Promise.resolve();
+}
+
+function setChain(filePath, p) {
+  fileChains.set(filePath, p.catch(() => {}));
+}
 
 function resolveSafe(root, relPath) {
   const resolvedRoot = path.resolve(root);
@@ -49,35 +59,96 @@ export function sanitizeAgentOrder(raw) {
   return result;
 }
 
+function sanitizeObserverAgent(value) {
+  if (typeof value !== 'string') return null;
+  const name = value.toLowerCase().replace(/^@/, '');
+  return NAME_RE.test(name) ? name : null;
+}
+
+async function readRaw(filePath) {
+  try {
+    return JSON.parse(await fs.readFile(filePath, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+async function writeRaw(filePath, data) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.tmp-${process.pid}-${++_writeCounter}`;
+  try {
+    await fs.writeFile(tmp, JSON.stringify(data, null, 2), 'utf8');
+    await fs.rename(tmp, filePath);
+  } catch (err) {
+    // H15: si writeFile o rename fallan, borrar el temporal para no dejar huérfanos.
+    try { await fs.unlink(tmp); } catch { /* ya borrado o inaccesible */ }
+    throw err;
+  }
+}
+
+/**
+ * Lee, mezcla el parche y escribe, en fila por ruta.
+ * `patch` puede tener { agentOrder?, observerAgent? }.
+ * Las dos escrituras simultáneas de campos distintos no se pisan.
+ */
+function mergeWrite(cwd, patch) {
+  const filePath = resolveSafe(cwd, CONFIG_FILE);
+  const next = chainFor(filePath).then(async () => {
+    const existing = await readRaw(filePath);
+    const agentOrder = sanitizeAgentOrder(
+      patch.agentOrder !== undefined
+        ? { agentOrder: patch.agentOrder }
+        : existing,
+    );
+    const observerAgent = patch.observerAgent !== undefined
+      ? sanitizeObserverAgent(patch.observerAgent)
+      : sanitizeObserverAgent(existing.observerAgent);
+    await writeRaw(filePath, { version: 1, agentOrder, observerAgent });
+  });
+  setChain(filePath, next);
+  return next;
+}
+
 /**
  * Lee el orden guardado. Ausente, roto o inválido → [].
  * Leer nunca crea la carpeta.
  */
 export async function readAgentOrder(cwd) {
-  const file = resolveSafe(cwd, CONFIG_FILE);
+  const filePath = resolveSafe(cwd, CONFIG_FILE);
   try {
-    const raw = await fs.readFile(file, 'utf8');
-    return sanitizeAgentOrder(JSON.parse(raw));
+    return sanitizeAgentOrder(JSON.parse(await fs.readFile(filePath, 'utf8')));
   } catch {
     return [];
   }
 }
 
 /**
- * Guarda el orden con escritura atómica.
+ * Guarda el orden con escritura atómica, sin pisar observerAgent.
  * Sanitiza antes de escribir: el archivo es del proyecto y lo lee un humano.
  */
 export async function writeAgentOrder(cwd, names) {
   const sanitized = sanitizeAgentOrder({ agentOrder: Array.isArray(names) ? names : [] });
-  const file = resolveSafe(cwd, CONFIG_FILE);
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tmp-${process.pid}-${++_writeCounter}`;
+  return mergeWrite(cwd, { agentOrder: sanitized });
+}
+
+/**
+ * Lee el agente designado para recibir avisos del observador.
+ * Ausente, roto o inválido → null.
+ */
+export async function readObserverAgent(cwd) {
+  const filePath = resolveSafe(cwd, CONFIG_FILE);
   try {
-    await fs.writeFile(tmp, JSON.stringify({ version: 1, agentOrder: sanitized }, null, 2), 'utf8');
-    await fs.rename(tmp, file);
-  } catch (err) {
-    // H15: si writeFile o rename fallan, borrar el temporal para no dejar huérfanos.
-    try { await fs.unlink(tmp); } catch { /* ya borrado o inaccesible */ }
-    throw err;
+    const raw = JSON.parse(await fs.readFile(filePath, 'utf8'));
+    return sanitizeObserverAgent(raw.observerAgent);
+  } catch {
+    return null;
   }
+}
+
+/**
+ * Guarda el agente designado sin pisar agentOrder.
+ * name = null borra la designación.
+ */
+export async function writeObserverAgent(cwd, name) {
+  return mergeWrite(cwd, { observerAgent: name });
 }

@@ -125,6 +125,12 @@ describe('registro de agentes', () => {
     const agent = await registerAgent(cwd, { name: 'claudio', role: 'codifica' });
     expect(agent.name).toBe('claudio'); // y se reconstruye
   });
+
+  it('registerAgent("bento") lanza con mensaje que dice qué hacer', async () => {
+    await expect(
+      registerAgent(cwd, { name: 'bento', role: 'test' }),
+    ).rejects.toThrow(/reservado/);
+  });
 });
 
 describe('estados', () => {

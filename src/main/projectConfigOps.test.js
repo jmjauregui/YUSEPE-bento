@@ -11,6 +11,8 @@ import {
   sanitizeAgentOrder,
   readAgentOrder,
   writeAgentOrder,
+  readObserverAgent,
+  writeObserverAgent,
 } from './projectConfigOps.js';
 
 const CONFIG_REL = path.join('.ybento', 'config', 'loop.json');
@@ -161,3 +163,38 @@ describe('writeAgentOrder', () => {
   });
 });
 
+/* ---------- 036: observerAgent + escrituras sin pisarse ---------- */
+
+describe('observerAgent', () => {
+  it('guardar el orden conserva observerAgent', async () => {
+    await writeObserverAgent(tmpDir, 'coord');
+    await writeAgentOrder(tmpDir, ['claudio', 'verifier']);
+    expect(await readObserverAgent(tmpDir)).toBe('coord');
+  });
+
+  it('guardar observerAgent conserva el orden', async () => {
+    await writeAgentOrder(tmpDir, ['claudio', 'verifier']);
+    await writeObserverAgent(tmpDir, 'coord');
+    expect(await readAgentOrder(tmpDir)).toEqual(['claudio', 'verifier']);
+  });
+
+  it('dos escrituras seguidas de campos distintos → quedan las dos', async () => {
+    const p1 = writeAgentOrder(tmpDir, ['claudio']);
+    const p2 = writeObserverAgent(tmpDir, 'coord');
+    await Promise.all([p1, p2]);
+    expect(await readAgentOrder(tmpDir)).toEqual(['claudio']);
+    expect(await readObserverAgent(tmpDir)).toBe('coord');
+  });
+
+  it('observerAgent inválido en el archivo → null, sin romper el orden', async () => {
+    const dir = path.join(tmpDir, '.ybento', 'config');
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      path.join(dir, 'loop.json'),
+      JSON.stringify({ version: 1, agentOrder: ['claudio'], observerAgent: '!!invalido' }),
+      'utf8',
+    );
+    expect(await readObserverAgent(tmpDir)).toBeNull();
+    expect(await readAgentOrder(tmpDir)).toEqual(['claudio']);
+  });
+});

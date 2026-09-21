@@ -172,6 +172,9 @@ const safeColor = (value) => (HEX_COLOR.test(String(value || '')) ? String(value
  */
 export async function registerAgent(cwd, { name, role = '', tileId = null, color = null } = {}) {
   const id = normalizeName(name);
+  if (id === 'bento') {
+    throw new Error('"@bento" es un nombre reservado por Bento. Usá otro nombre para tu agente.');
+  }
   return updateStatus(cwd, (status) => {
     const prev = status.agents[id] || {};
     status.agents[id] = {
@@ -726,4 +729,48 @@ export function watchLoop(cwd, onChange) {
   watcher.on('error', () => watcher.close());
 
   return () => watcher.close();
+}
+
+/* ---------- Lectura eficiente del último mensaje ---------- */
+
+const READ_TAIL_BYTES = 64 * 1024;
+
+/**
+ * Lee el último mensaje del hilo sin leer el archivo entero.
+ *
+ * Lee los últimos 64 KB: suficiente para la línea más larga observada en campo.
+ * Si la última línea no entra ahí (mensaje enorme), cae a `listMessages`.
+ */
+export async function readLastMessage(cwd) {
+  const file = resolveSafe(cwd, MESSAGES_FILE);
+  let chunk;
+  try {
+    const fh = await fs.open(file, 'r');
+    try {
+      const { size } = await fh.stat();
+      if (size === 0) return null;
+      const toRead = Math.min(size, READ_TAIL_BYTES);
+      const buf = Buffer.alloc(toRead);
+      const { bytesRead } = await fh.read(buf, 0, toRead, size - toRead);
+      chunk = buf.slice(0, bytesRead).toString('utf8');
+    } finally {
+      await fh.close();
+    }
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+
+  const trimmed = chunk.trimEnd();
+  const lastNl = trimmed.lastIndexOf('\n');
+  const lastLine = lastNl === -1 ? trimmed : trimmed.slice(lastNl + 1);
+
+  try {
+    const msg = JSON.parse(lastLine);
+    if (msg && msg.id && msg.to) return msg;
+  } catch { /* línea incompleta: cae a fallback */ }
+
+  // Fallback: el chunk empezó en medio de una línea larga
+  const all = await listMessages(cwd);
+  return all.length ? all[all.length - 1] : null;
 }
