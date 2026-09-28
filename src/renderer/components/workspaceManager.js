@@ -16,10 +16,11 @@ import { h } from '../utils/dom.js';
 import { svgIcon } from '../utils/icons.js';
 import { bus } from '../core/eventBus.js';
 import { state } from '../core/state.js';
-import { openModal } from './modal.js';
+import { openModal, promptModal } from './modal.js';
 import { ProfileManager } from '../core/profileManager.js';
 import * as liveTiles from '../core/liveTiles.js';
 import { normalizeUrl } from './webviewTile.js';
+import { templateFromProfile, validateTemplate } from '../core/layoutTemplates.js';
 
 const ZOOM_STEP = 0.1;
 const ZOOM_MIN = 0.5;
@@ -61,15 +62,54 @@ export function openWorkspaceManager() {
 
   const table = h('table', { class: 'w-full text-xs border-collapse' });
 
+  // "Guardar distribución como plantilla": la geometría de los tiles de
+  // este workspace queda disponible en el selector de "Nuevo workspace".
+  const saveTemplateBtn = h('button', {
+    class: 'inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-line hover:bg-bg-elev transition',
+    title: 'Guarda la posición y tamaño de estos tiles como plantilla para crear otros workspaces iguales',
+    onClick: saveAsTemplate,
+  }, [svgIcon('save', { size: 13 }), h('span', {}, 'Guardar distribución como plantilla')]);
+
   openModal({
     title: 'Administrador del workspace',
     body: h('div', {}, [
       h('p', { class: 'text-xs text-fg-subtle mb-3' },
         'Tiles abiertos en este espacio de trabajo.'),
       h('div', { class: 'max-h-[62vh] overflow-auto' }, [table]),
+      h('div', { class: 'mt-3 flex justify-end' }, [saveTemplateBtn]),
     ]),
     size: 'lg',
   });
+
+  async function saveAsTemplate() {
+    const profile = state.profile;
+    if (!profile) return;
+    const tiles = profile.tiles || [];
+    // Reabrir el administrador después: promptModal usa el mismo modal.
+    const name = await promptModal({
+      title: 'Guardar como plantilla',
+      label: tiles.length
+        ? `Se guardará la distribución de ${tiles.length} tile(s). Nombre de la plantilla:`
+        : 'Este workspace no tiene tiles: la plantilla quedará vacía. Nombre de la plantilla:',
+      placeholder: 'ej. Cuatro terminales + Discord',
+      confirmLabel: 'Guardar',
+    });
+    if (!name) { openWorkspaceManager(); return; }
+    const template = templateFromProfile(profile, { name });
+    const check = validateTemplate(template);
+    if (!check.ok) {
+      bus.emit('toast', { type: 'error', message: `No se pudo guardar la plantilla: ${check.error}` });
+      openWorkspaceManager();
+      return;
+    }
+    try {
+      await window.yusepe.templates.create(template);
+      bus.emit('toast', { type: 'success', message: `Plantilla "${name}" guardada. La verás al crear un workspace.` });
+    } catch (err) {
+      bus.emit('toast', { type: 'error', message: err?.message || String(err) });
+    }
+    openWorkspaceManager();
+  }
 
   render();
 

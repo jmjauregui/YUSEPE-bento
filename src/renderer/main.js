@@ -23,6 +23,8 @@ import { initFileTreeSidebar, toggleFileTreeSidebar } from './components/fileTre
 import { openGitPanel } from './components/gitPanel.js';
 import { openAgentPanel } from './components/agentPanel.js';
 import { openWorkspaceManager } from './components/workspaceManager.js';
+import { pickTemplate } from './components/templatePicker.js';
+import { instantiateTemplate } from './core/layoutTemplates.js';
 import { openCommandPalette } from './components/commandPalette.js';
 import { openQuickOpenFile } from './components/quickOpenFile.js';
 import { openShortcutsCheatsheet } from './components/shortcutsCheatsheet.js';
@@ -211,7 +213,13 @@ async function createNewProfile() {
     });
     const cwd = confirmed ? await pickFolder() : null;
 
-    const p = await ProfileManager.create(name, cwd);
+    // Tercer paso: plantilla de distribución. Cerrar el selector sin
+    // elegir cancela la creación (no queda un workspace a medias).
+    const template = await pickTemplate();
+    if (!template) return;
+    const tiles = instantiateTemplate(template);
+
+    const p = await ProfileManager.create(name, cwd, tiles);
     await refreshProfileSelect(p.id);
     await ProfileManager.load(p.id);
     showView();
