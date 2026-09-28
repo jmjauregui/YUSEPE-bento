@@ -2,7 +2,7 @@
  * src/renderer/components/tile.js
  * --------------------------------------------------------------
  * Factoría de tiles. Nuevos tiles incluyen colSpan/rowSpan
- * para el grid manual de 12 columnas.
+ * para el grid manual de 24 columnas.
  * --------------------------------------------------------------
  */
 import { ProfileManager } from '../core/profileManager.js';
@@ -55,13 +55,13 @@ export const TileFactory = {
       kind: 'webview',
       url,
       title: domainOf(url),
-      colSpan: 4,
-      rowSpan: 4,
+      colSpan: 8,
+      rowSpan: 8,
     });
   },
 
   calculator() {
-    return addTile({ kind: 'calculator', colSpan: 4, rowSpan: 4 });
+    return addTile({ kind: 'calculator', colSpan: 8, rowSpan: 8 });
   },
 
   /**
@@ -69,19 +69,19 @@ export const TileFactory = {
    * son .md en `.ybento/tasks/` del proyecto (ver main/tasksOps.js).
    */
   tasks() {
-    return addTile({ kind: 'tasks', title: 'Tareas', colSpan: 3, rowSpan: 5 });
+    return addTile({ kind: 'tasks', title: 'Tareas', colSpan: 6, rowSpan: 10 });
   },
 
   terminal(cwd = null) {
-    return addTile({ kind: 'terminal', colSpan: 6, rowSpan: 4, cwd: cwd || null });
+    return addTile({ kind: 'terminal', colSpan: 12, rowSpan: 8, cwd: cwd || null });
   },
 
   /** Terminal que ejecuta `command` automáticamente al abrirse. */
   terminalPreloaded(command, cwd = null) {
     return addTile({
       kind: 'terminal',
-      colSpan: 6,
-      rowSpan: 4,
+      colSpan: 12,
+      rowSpan: 8,
       cwd: cwd || null,
       command: command || null,
     });
@@ -98,8 +98,8 @@ export const TileFactory = {
       relPath: entry.relPath,
       name: entry.name,
       title: entry.name,
-      colSpan: 4,
-      rowSpan: 5,
+      colSpan: 8,
+      rowSpan: 10,
     });
   },
 
@@ -110,8 +110,8 @@ export const TileFactory = {
       title: app.name,
       icon: app.icon,
       appId: app.id,
-      colSpan: 4,
-      rowSpan: 4,
+      colSpan: 8,
+      rowSpan: 8,
     });
   },
 };
