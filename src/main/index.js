@@ -7,7 +7,7 @@
  * que funcionan incluso cuando un <webview> tiene el foco.
  * --------------------------------------------------------------
  */
-import { app, BrowserWindow, shell, session, ipcMain, Menu, nativeTheme, dialog } from 'electron';
+import { app, BrowserWindow, shell, session, ipcMain, Menu, nativeTheme, dialog, components } from 'electron';
 import { join, extname } from 'path';
 import { promises as fs } from 'fs';
 import { registerIpc } from './ipc.js';
@@ -294,7 +294,19 @@ function configureSession() {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Electron de castLabs (Widevine): el CDM llega por el component updater;
+  // esperar a `components.whenReady()` fuerza su instalación la primera vez
+  // para que Netflix y similares funcionen desde el primer webview. Con el
+  // Electron oficial `components` no existe y se salta.
+  if (components?.whenReady) {
+    try {
+      await components.whenReady();
+      console.info('[widevine] componentes listos:', JSON.stringify(components.status?.() ?? null));
+    } catch (err) {
+      console.warn('[widevine] no se pudo instalar el CDM:', err?.message || err);
+    }
+  }
   configureSession();
 
   const profilesDir = join(app.getPath('userData'), 'profiles');
