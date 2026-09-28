@@ -12,16 +12,16 @@ import {
 } from './layout.js';
 
 describe('GRID_COLS', () => {
-  it('el grid tiene 24 columnas', () => {
-    expect(GRID_COLS).toBe(24);
+  it('el grid tiene 48 columnas', () => {
+    expect(GRID_COLS).toBe(48);
   });
 
-  it('findEmptySpot usa 24 como ancho por defecto', () => {
-    // Fila 1 ocupada en las 23 primeras columnas: un tile de ancho 2 no cabe
-    // en la columna 24 y baja a la fila 2; uno de ancho 1 sí entra en la 24.
-    const occupied = new Set(Array.from({ length: 23 }, (_, i) => `${i + 1},1`));
+  it('findEmptySpot usa 48 como ancho por defecto', () => {
+    // Fila 1 ocupada en las 47 primeras columnas: un tile de ancho 2 no cabe
+    // en la columna 48 y baja a la fila 2; uno de ancho 1 sí entra en la 48.
+    const occupied = new Set(Array.from({ length: 47 }, (_, i) => `${i + 1},1`));
     expect(findEmptySpot(2, 1, occupied)).toEqual({ col: 1, row: 2 });
-    expect(findEmptySpot(1, 1, occupied)).toEqual({ col: 24, row: 1 });
+    expect(findEmptySpot(1, 1, occupied)).toEqual({ col: 48, row: 1 });
   });
 });
 

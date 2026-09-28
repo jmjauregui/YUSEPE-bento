@@ -133,7 +133,7 @@ src/
   algo vivo que perder).
 
 ### Bento Grid
-- Grid manual de 24 columnas (12 hasta v1.5.3), filas automáticas (`minmax(70px, 1fr)`).
+- Grid manual de 48 columnas (12 hasta v1.5.3), filas automáticas (`minmax(70px, 1fr)`).
   Perfiles guardados con la resolución anterior (6 columnas) se migran
   automáticamente al abrirlos (`gridVersion`, ver `main/storage.js`).
 - **Resize** arrastrando bordes/esquina: si el crecimiento choca con un

@@ -17,23 +17,29 @@ import { randomUUID } from 'crypto';
 //   v1: 6 columnas / filas de 140px (perfiles sin `gridVersion`)
 //   v2: 12 columnas / filas de 70px
 //   v3: 24 columnas / filas de 35px
-// Cada salto duplica los segmentos en ambos ejes con la misma resolución
-// física, así que un perfil migrado se ve idéntico. La migración corre una
-// sola vez al cargar, encadenando las versiones que falten, y se persiste.
-const GRID_VERSION = 3;
-/** Factor de escala para pasar de la versión N a la N+1. */
-const GRID_SCALE_FROM = { 1: 2, 2: 2 };
+//   v4: 48 columnas / filas de 35px (solo columnas: filas más finas que
+//       35px ya no aportan y hacen saltar el arrastre vertical)
+// Cada salto multiplica los segmentos con la misma resolución física, así
+// que un perfil migrado se ve idéntico. La migración corre una sola vez al
+// cargar, encadenando las versiones que falten, y se persiste.
+const GRID_VERSION = 4;
+/** Factores de escala (columnas, filas) para pasar de la versión N a la N+1. */
+const GRID_SCALE_FROM = {
+  1: { cols: 2, rows: 2 },
+  2: { cols: 2, rows: 2 },
+  3: { cols: 2, rows: 1 },
+};
 
 function isCurrentOrNewer(profile) {
   return Number.isInteger(profile.gridVersion) && profile.gridVersion >= GRID_VERSION;
 }
 
-function scaleTiles(tiles, factor) {
+function scaleTiles(tiles, { cols, rows }) {
   for (const tile of tiles || []) {
-    if (tile.col != null) tile.col = (tile.col - 1) * factor + 1;
-    if (tile.row != null) tile.row = (tile.row - 1) * factor + 1;
-    if (tile.colSpan != null) tile.colSpan = tile.colSpan * factor;
-    if (tile.rowSpan != null) tile.rowSpan = tile.rowSpan * factor;
+    if (tile.col != null) tile.col = (tile.col - 1) * cols + 1;
+    if (tile.row != null) tile.row = (tile.row - 1) * rows + 1;
+    if (tile.colSpan != null) tile.colSpan = tile.colSpan * cols;
+    if (tile.rowSpan != null) tile.rowSpan = tile.rowSpan * rows;
   }
 }
 

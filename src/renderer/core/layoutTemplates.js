@@ -30,33 +30,33 @@ export const BUILTIN_TEMPLATES = [
   {
     id: 'dos-terminales', builtin: true, name: 'Dos terminales',
     description: 'Dos terminales lado a lado, a toda la altura.',
-    tiles: [term('Terminal 1', 1, 1, 12, 20), term('Terminal 2', 13, 1, 12, 20)],
+    tiles: [term('Terminal 1', 1, 1, 24, 20), term('Terminal 2', 25, 1, 24, 20)],
   },
   {
     id: 'cuatro-columnas', builtin: true, name: 'Cuatro columnas',
     description: 'Cuatro terminales en columnas iguales. Pensada para monitores anchos.',
     tiles: [
-      term('Terminal 1', 1, 1, 6, 20), term('Terminal 2', 7, 1, 6, 20),
-      term('Terminal 3', 13, 1, 6, 20), term('Terminal 4', 19, 1, 6, 20),
+      term('Terminal 1', 1, 1, 12, 20), term('Terminal 2', 13, 1, 12, 20),
+      term('Terminal 3', 25, 1, 12, 20), term('Terminal 4', 37, 1, 12, 20),
     ],
   },
   {
     id: 'cuatro-mas-panel', builtin: true, name: 'Cuatro terminales + panel',
     description: 'Cuatro terminales angostas y, a la derecha, un navegador arriba y Discord abajo.',
     tiles: [
-      term('Terminal 1', 1, 1, 4, 20), term('Terminal 2', 5, 1, 4, 20),
-      term('Terminal 3', 9, 1, 4, 20), term('Terminal 4', 13, 1, 4, 20),
-      { kind: 'webview', title: 'Navegador', url: 'https://www.google.com', col: 17, row: 1, colSpan: 8, rowSpan: 10 },
-      { kind: 'webview', title: 'Discord', url: 'https://discord.com/app', col: 17, row: 11, colSpan: 8, rowSpan: 10 },
+      term('Terminal 1', 1, 1, 8, 20), term('Terminal 2', 9, 1, 8, 20),
+      term('Terminal 3', 17, 1, 8, 20), term('Terminal 4', 25, 1, 8, 20),
+      { kind: 'webview', title: 'Navegador', url: 'https://www.google.com', col: 33, row: 1, colSpan: 16, rowSpan: 10 },
+      { kind: 'webview', title: 'Discord', url: 'https://discord.com/app', col: 33, row: 11, colSpan: 16, rowSpan: 10 },
     ],
   },
   {
     id: 'terminal-tareas', builtin: true, name: 'Terminal principal + tareas',
     description: 'Una terminal grande arriba; abajo, una terminal auxiliar y las tareas del workspace.',
     tiles: [
-      term('Terminal', 1, 1, 24, 14),
-      term('Auxiliar', 1, 15, 12, 6),
-      { kind: 'tasks', title: 'Tareas', col: 13, row: 15, colSpan: 12, rowSpan: 6 },
+      term('Terminal', 1, 1, 48, 14),
+      term('Auxiliar', 1, 15, 24, 6),
+      { kind: 'tasks', title: 'Tareas', col: 25, row: 15, colSpan: 24, rowSpan: 6 },
     ],
   },
 ];

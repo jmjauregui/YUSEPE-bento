@@ -6,7 +6,7 @@ YUSEPE Bento es una app de escritorio (Electron) que funciona como hub de espaci
 
 Piezas principales del producto:
 
-1. **Bento Grid** — grid de 24 columnas (12 hasta v1.5.3) redimensionable a mano; los tiles se colocan, mueven y empujan entre sí.
+1. **Bento Grid** — grid de 48 columnas (12 hasta v1.5.3) redimensionable a mano; los tiles se colocan, mueven y empujan entre sí.
 2. **Tiles funcionales** — terminal (node-pty), webview, calculadora, explorador de archivos, panel Git, panel de Agentes, Tareas.
 3. **Loop multiagente** — varias terminales con agentes distintos (Claude Code, opencode…) que se envían mensajes entre sí con el CLI `ybento`.
 4. **Workspaces / Perfiles** — cada perfil tiene su propio grid, carpeta de proyecto (cwd), wallpaper y estado de tiles.

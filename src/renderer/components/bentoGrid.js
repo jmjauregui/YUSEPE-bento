@@ -2,7 +2,7 @@
  * src/renderer/components/bentoGrid.js
  * --------------------------------------------------------------
  * Bento Grid con posiciones manuales:
- *  - Grid de 24 columnas, filas auto (minmax 35px, 1fr).
+ *  - Grid de 48 columnas, filas auto (minmax 35px, 1fr).
  *  - Cada tile tiene col/row/colSpan/rowSpan explícitos.
  *  - Auto-placement para tiles nuevos (busca hueco libre).
  *  - Resize: arrastrar bordes (right, bottom, corner), con push/expand
@@ -80,7 +80,7 @@ function ensurePositions(tiles) {
 
   let changed = false;
   for (const tile of unpositioned) {
-    const cs = tile.colSpan || 8;
+    const cs = tile.colSpan || 16;
     const rs = tile.rowSpan || 8;
     const pos = findEmptySpot(cs, rs, occupied);
     tile.col = pos.col;

@@ -2,13 +2,13 @@
  * src/renderer/core/layout.js
  * --------------------------------------------------------------
  * Utilidades puras de posicionamiento para el Bento Grid manual
- * (24 columnas, filas auto). Compartidas entre bentoGrid.js
+ * (48 columnas, filas auto). Compartidas entre bentoGrid.js
  * (render/posicionamiento en vivo) y profileManager.js (reacomodo
  * al eliminar un tile).
  * --------------------------------------------------------------
  */
 
-export const GRID_COLS = 24;
+export const GRID_COLS = 48;
 
 /**
  * Busca el primer hueco libre (orden de lectura: fila, luego columna).

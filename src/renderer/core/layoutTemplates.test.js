@@ -25,10 +25,10 @@ describe('validateTemplate', () => {
     expect(r.error).toMatch(/nope/);
   });
 
-  it('rechaza tiles fuera de las 24 columnas', () => {
-    const r = validateTemplate({ ...base, tiles: [{ kind: 'terminal', col: 20, row: 1, colSpan: 6, rowSpan: 2 }] });
+  it('rechaza tiles fuera de las 48 columnas', () => {
+    const r = validateTemplate({ ...base, tiles: [{ kind: 'terminal', col: 44, row: 1, colSpan: 6, rowSpan: 2 }] });
     expect(r.ok).toBe(false);
-    expect(r.error).toMatch(/24/);
+    expect(r.error).toMatch(/48/);
   });
 
   it('rechaza solapes', () => {

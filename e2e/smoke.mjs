@@ -9,10 +9,10 @@
  *
  * Verifica, en este orden:
  *   1. La app abre en la lista de workspaces.
- *   2. Un perfil sembrado en gridVersion 2 se migra a 3 (×2) al abrirlo y
- *      el grid se pinta con 24 columnas.
+ *   2. Un perfil sembrado en gridVersion 2 se migra a 4 al abrirlo (columnas
+ *      ×4, filas ×2) y el grid se pinta con 48 columnas.
  *   3. "Nuevo workspace" ofrece plantillas; "Cuatro columnas" crea 4
- *      terminales en las columnas 1, 7, 13 y 19 con span 6.
+ *      terminales en las columnas 1, 13, 25 y 37 con span 12.
  *   4. "Guardar distribución como plantilla" persiste la plantilla y
  *      aparece en "Mis plantillas" al crear otro workspace.
  *   5. Borrar la plantilla desde el selector la saca del disco.
@@ -66,13 +66,13 @@ try {
   await page.locator('#profile-list').getByText('Sembrado v2').first().click();
   await page.waitForSelector('#bento .tile', { timeout: 15000 });
   const cols = await page.$eval('#bento', (el) => getComputedStyle(el).gridTemplateColumns.split(' ').length);
-  check(cols === 24, `el grid se pinta con 24 columnas (medido: ${cols})`);
+  check(cols === 48, `el grid se pinta con 48 columnas (medido: ${cols})`);
   const migrated = JSON.parse(await fs.readFile(path.join(profilesDir, 'seed-v2.json'), 'utf8'));
-  check(migrated.gridVersion === 3, `el perfil sembrado quedó en gridVersion 3 (medido: ${migrated.gridVersion})`);
-  check(migrated.tiles[1].col === 13 && migrated.tiles[1].colSpan === 12,
-    `el segundo tile pasó de col 7/span 6 a col 13/span 12 (medido: ${migrated.tiles[1].col}/${migrated.tiles[1].colSpan})`);
+  check(migrated.gridVersion === 4, `el perfil sembrado quedó en gridVersion 4 (medido: ${migrated.gridVersion})`);
+  check(migrated.tiles[1].col === 25 && migrated.tiles[1].colSpan === 24 && migrated.tiles[1].rowSpan === 8,
+    `el segundo tile pasó de col 7/span 6x4 a col 25/span 24x8 (medido: ${migrated.tiles[1].col}/${migrated.tiles[1].colSpan}x${migrated.tiles[1].rowSpan})`);
   const gridCol = await page.$eval('#bento .tile[data-tile-id="s2"]', (el) => el.style.gridColumn);
-  check(gridCol === '13 / span 12', `el tile se posiciona en la grilla nueva (style: "${gridCol}")`);
+  check(gridCol === '25 / span 24', `el tile se posiciona en la grilla nueva (style: "${gridCol}")`);
 
   // 3. Nuevo workspace con plantilla "Cuatro columnas"
   await page.locator('#btn-back-profiles').click();
@@ -88,15 +88,15 @@ try {
   await page.locator('#modal-body button', { hasText: 'Cuatro columnas' }).click();
   await page.waitForFunction(() => document.querySelectorAll('#bento .tile').length === 4, null, { timeout: 20000 });
   const positions = await page.$$eval('#bento .tile', (els) => els.map((el) => el.style.gridColumn).sort());
-  check(JSON.stringify(positions) === JSON.stringify(['1 / span 6', '13 / span 6', '19 / span 6', '7 / span 6']),
-    `cuatro terminales en las columnas 1, 7, 13 y 19 con span 6 (medido: ${positions.join(' · ')})`);
+  check(JSON.stringify(positions) === JSON.stringify(['1 / span 12', '13 / span 12', '25 / span 12', '37 / span 12']),
+    `cuatro terminales en las columnas 1, 13, 25 y 37 con span 12 (medido: ${positions.join(' · ')})`);
   const idx = JSON.parse(await fs.readFile(path.join(profilesDir, '_index.json'), 'utf8'));
   const created = idx.profiles.find((p) => p.name === 'E2E cuatro');
   check(!!created, 'el workspace nuevo quedó en el índice');
   if (created) {
     const prof = JSON.parse(await fs.readFile(path.join(profilesDir, `${created.id}.json`), 'utf8'));
-    check(prof.gridVersion === 3 && prof.tiles.length === 4 && prof.tiles.every((t) => t.id),
-      'el perfil nuevo tiene gridVersion 3 y 4 tiles con id');
+    check(prof.gridVersion === 4 && prof.tiles.length === 4 && prof.tiles.every((t) => t.id),
+      'el perfil nuevo tiene gridVersion 4 y 4 tiles con id');
   }
 
   // 4. Guardar distribución como plantilla y reutilizarla

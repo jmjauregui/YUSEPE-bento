@@ -155,7 +155,7 @@ describe('ProfileStorage.create — tiles iniciales (plantillas)', () => {
     expect(typeof loaded.tiles[0].id).toBe('string');
     expect(loaded.tiles[0].id.length).toBeGreaterThan(0);
     expect(loaded.tiles[1].id).toBe('fijo');
-    expect(loaded.gridVersion).toBe(3);
+    expect(loaded.gridVersion).toBe(4);
   });
 
   it('tiles que no son array se ignoran', async () => {
@@ -166,7 +166,7 @@ describe('ProfileStorage.create — tiles iniciales (plantillas)', () => {
 
 describe('ProfileStorage.importProfile', () => {
   it('crea un perfil nuevo con id propio (nunca reutiliza el del archivo)', async () => {
-    const raw = { id: 'id-original', name: 'Deploy', cwd: '/tmp', tiles: [], gridVersion: 3 };
+    const raw = { id: 'id-original', name: 'Deploy', cwd: '/tmp', tiles: [], gridVersion: 4 };
     const imported = await storage.importProfile(raw);
 
     expect(imported.id).toBeTruthy();
@@ -182,7 +182,7 @@ describe('ProfileStorage.importProfile', () => {
 
   it('preserva gridVersion del archivo — no fuerza re-migración si ya es la actual', async () => {
     const raw = {
-      name: 'Ya migrado', tiles: [{ id: 't1', col: 5, row: 3, colSpan: 4, rowSpan: 2 }], gridVersion: 3,
+      name: 'Ya migrado', tiles: [{ id: 't1', col: 5, row: 3, colSpan: 4, rowSpan: 2 }], gridVersion: 4,
     };
     const imported = await storage.importProfile(raw);
     expect(imported.tiles[0]).toMatchObject({ col: 5, row: 3, colSpan: 4, rowSpan: 2 });
@@ -191,8 +191,8 @@ describe('ProfileStorage.importProfile', () => {
   it('migra la grilla si el archivo importado no tiene gridVersion (export viejo)', async () => {
     const raw = { name: 'Viejo', tiles: [{ id: 't1', col: 1, row: 1, colSpan: 3, rowSpan: 2 }] };
     const imported = await storage.importProfile(raw);
-    expect(imported.gridVersion).toBe(3);
-    expect(imported.tiles[0]).toMatchObject({ col: 1, row: 1, colSpan: 12, rowSpan: 8 });
+    expect(imported.gridVersion).toBe(4);
+    expect(imported.tiles[0]).toMatchObject({ col: 1, row: 1, colSpan: 24, rowSpan: 8 });
   });
 
   it('tiles ausente o inválido se normaliza a array vacío', async () => {
@@ -227,7 +227,7 @@ describe('ProfileStorage.remove', () => {
   });
 });
 
-describe('ProfileStorage.load — migración de grid (v1 6 col → v2 12 col → v3 24 col)', () => {
+describe('ProfileStorage.load — migración de grid (v1 6 → v2 12 → v3 24 → v4 48 columnas)', () => {
   async function writeRawProfile(id, overrides = {}) {
     const profile = {
       id, name: 'Legacy', cwd: null, createdAt: 1, updatedAt: 1, tiles: [],
@@ -237,24 +237,34 @@ describe('ProfileStorage.load — migración de grid (v1 6 col → v2 12 col →
     return profile;
   }
 
-  it('v1 (sin gridVersion) escala x4 en total: pasa por v2 y v3', async () => {
+  it('v1 (sin gridVersion) escala columnas x8 y filas x4: pasa por v2, v3 y v4', async () => {
     await writeRawProfile('legacy-1', {
       tiles: [{ id: 't1', col: 3, row: 2, colSpan: 2, rowSpan: 1 }],
     });
     const loaded = await storage.load('legacy-1');
-    expect(loaded.gridVersion).toBe(3);
-    // (3-1)*4+1 = 9 · (2-1)*4+1 = 5 · 2*4 = 8 · 1*4 = 4
-    expect(loaded.tiles[0]).toMatchObject({ col: 9, row: 5, colSpan: 8, rowSpan: 4 });
+    expect(loaded.gridVersion).toBe(4);
+    // (3-1)*8+1 = 17 · (2-1)*4+1 = 5 · 2*8 = 16 · 1*4 = 4
+    expect(loaded.tiles[0]).toMatchObject({ col: 17, row: 5, colSpan: 16, rowSpan: 4 });
   });
 
-  it('v2 escala x2 y queda en v3', async () => {
+  it('v2 escala columnas x4 y filas x2 y queda en v4', async () => {
     await writeRawProfile('v2-1', {
       gridVersion: 2,
       tiles: [{ id: 't1', col: 5, row: 3, colSpan: 4, rowSpan: 2 }],
     });
     const loaded = await storage.load('v2-1');
-    expect(loaded.gridVersion).toBe(3);
-    expect(loaded.tiles[0]).toMatchObject({ col: 9, row: 5, colSpan: 8, rowSpan: 4 });
+    expect(loaded.gridVersion).toBe(4);
+    expect(loaded.tiles[0]).toMatchObject({ col: 17, row: 5, colSpan: 16, rowSpan: 4 });
+  });
+
+  it('v3 escala solo columnas x2 y queda en v4', async () => {
+    await writeRawProfile('v3-1', {
+      gridVersion: 3,
+      tiles: [{ id: 't1', col: 5, row: 3, colSpan: 4, rowSpan: 2 }],
+    });
+    const loaded = await storage.load('v3-1');
+    expect(loaded.gridVersion).toBe(4);
+    expect(loaded.tiles[0]).toMatchObject({ col: 9, row: 3, colSpan: 8, rowSpan: 2 });
   });
 
   it('persiste la migración: cargar de nuevo no vuelve a escalar', async () => {
@@ -264,25 +274,25 @@ describe('ProfileStorage.load — migración de grid (v1 6 col → v2 12 col →
     });
     await storage.load('legacy-2');
     const loadedAgain = await storage.load('legacy-2');
-    expect(loadedAgain.tiles[0]).toMatchObject({ col: 1, row: 1, colSpan: 12, rowSpan: 4 });
+    expect(loadedAgain.tiles[0]).toMatchObject({ col: 1, row: 1, colSpan: 24, rowSpan: 4 });
   });
 
-  it('perfiles ya en gridVersion 3 no se tocan', async () => {
+  it('perfiles ya en gridVersion 4 no se tocan', async () => {
     await writeRawProfile('current-1', {
-      gridVersion: 3,
+      gridVersion: 4,
       tiles: [{ id: 't1', col: 5, row: 3, colSpan: 4, rowSpan: 2 }],
     });
     const loaded = await storage.load('current-1');
     expect(loaded.tiles[0]).toMatchObject({ col: 5, row: 3, colSpan: 4, rowSpan: 2 });
   });
 
-  it('perfiles de una app más nueva (gridVersion > 3) no se tocan ni se reescriben', async () => {
+  it('perfiles de una app más nueva (gridVersion > 4) no se tocan ni se reescriben', async () => {
     await writeRawProfile('future-1', {
-      gridVersion: 4,
+      gridVersion: 5,
       tiles: [{ id: 't1', col: 5, row: 3, colSpan: 4, rowSpan: 2 }],
     });
     const loaded = await storage.load('future-1');
-    expect(loaded.gridVersion).toBe(4);
+    expect(loaded.gridVersion).toBe(5);
     expect(loaded.tiles[0]).toMatchObject({ col: 5, row: 3, colSpan: 4, rowSpan: 2 });
   });
 
@@ -292,17 +302,17 @@ describe('ProfileStorage.load — migración de grid (v1 6 col → v2 12 col →
       tiles: [{ id: 't1', col: 1, row: 1, colSpan: 1, rowSpan: 1 }],
     });
     const loaded = await storage.load('bad-1');
-    expect(loaded.gridVersion).toBe(3);
-    expect(loaded.tiles[0]).toMatchObject({ col: 1, row: 1, colSpan: 4, rowSpan: 4 });
+    expect(loaded.gridVersion).toBe(4);
+    expect(loaded.tiles[0]).toMatchObject({ col: 1, row: 1, colSpan: 8, rowSpan: 4 });
   });
 
   it('tiles sin posición solo escalan los campos presentes', async () => {
     await writeRawProfile('partial-1', {
-      gridVersion: 2,
+      gridVersion: 3,
       tiles: [{ id: 't1', colSpan: 3, rowSpan: 5 }],
     });
     const loaded = await storage.load('partial-1');
-    expect(loaded.tiles[0]).toEqual({ id: 't1', colSpan: 6, rowSpan: 10 });
+    expect(loaded.tiles[0]).toEqual({ id: 't1', colSpan: 6, rowSpan: 5 });
   });
 });
 

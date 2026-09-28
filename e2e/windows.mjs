@@ -28,8 +28,8 @@ const profilesDir = path.join(userData, 'profiles');
 await fs.mkdir(profilesDir, { recursive: true });
 
 const seeded = {
-  id: 'ventanas', name: 'Ventanas', cwd: null, createdAt: 1, updatedAt: 1, gridVersion: 3,
-  tiles: [{ id: 't-term', kind: 'terminal', title: 'Shell', col: 1, row: 1, colSpan: 12, rowSpan: 20 }],
+  id: 'ventanas', name: 'Ventanas', cwd: null, createdAt: 1, updatedAt: 1, gridVersion: 4,
+  tiles: [{ id: 't-term', kind: 'terminal', title: 'Shell', col: 1, row: 1, colSpan: 24, rowSpan: 20 }],
 };
 await fs.writeFile(path.join(profilesDir, 'ventanas.json'), JSON.stringify(seeded, null, 2));
 await fs.writeFile(path.join(profilesDir, '_index.json'), JSON.stringify({
