@@ -23,6 +23,7 @@ import { buildPtyEnv, ensureShim } from './loopShim.js';
 import { createWriteQueue } from './ptyWriteQueue.js';
 import { SnippetsStore } from './snippetsOps.js';
 import { TemplatesStore } from './templatesOps.js';
+import { OutputRing, HandoffRegistry, WorkspaceClaims, attachPty } from './multiWindow.js';
 import * as diag from './loopDiag.js';
 
 // Carga pty de forma perezosa: si falla (p.ej. sin recompilar)
@@ -40,11 +41,17 @@ function getPty() {
 }
 
 /**
- * @param {{ app: import('electron').App, profilesDir: string }} opts
- * @returns {{ storage: ProfileStorage, dispose: () => void }}
+ * @param {{ app: import('electron').App, profilesDir: string, broadcast?: (channel: string, payload?: any) => void }} opts
+ *   `broadcast` envía un mensaje a TODAS las ventanas (varias ventanas
+ *   pueden mostrar la lista de workspaces a la vez; ver index.js).
+ * @returns {{ storage: ProfileStorage, dispose: () => void, releaseWindow: (webContentsId: number) => void }}
  */
-export function registerIpc({ app, profilesDir }) {
+export function registerIpc({ app, profilesDir, broadcast = () => {} }) {
   const storage = new ProfileStorage(profilesDir);
+  // Traspaso de workspaces entre ventanas y "quién tiene abierto qué"
+  // (ver multiWindow.js y el spec de ventanas independientes).
+  const handoff = new HandoffRegistry();
+  const claims = new WorkspaceClaims();
   const snippets = new SnippetsStore(join(app.getPath('userData'), 'snippets.json'));
   const templates = new TemplatesStore(join(app.getPath('userData'), 'layout-templates.json'));
 
@@ -62,11 +69,28 @@ export function registerIpc({ app, profilesDir }) {
 
   // -------- Perfiles --------
   ipcMain.handle('profiles:list', () => storage.list());
-  ipcMain.handle('profiles:create', (_e, payload) => storage.create(payload));
+  // Crear/borrar/renombrar avisan a todas las ventanas: cada una tiene su
+  // propia copia de la lista de workspaces.
+  const notifying = (fn) => async (...args) => {
+    const result = await fn(...args);
+    broadcast('profiles:changed');
+    return result;
+  };
+  ipcMain.handle('profiles:create', notifying((_e, payload) => storage.create(payload)));
   ipcMain.handle('profiles:load', (_e, id) => storage.load(id));
   ipcMain.handle('profiles:save', (_e, profile) => storage.save(profile));
-  ipcMain.handle('profiles:delete', (_e, id) => storage.remove(id));
-  ipcMain.handle('profiles:rename', (_e, { id, name }) => storage.rename(id, name));
+  ipcMain.handle('profiles:delete', notifying((_e, id) => storage.remove(id)));
+  ipcMain.handle('profiles:rename', notifying((_e, { id, name }) => storage.rename(id, name)));
+
+  // -------- Workspaces en varias ventanas --------
+  // Un workspace está abierto en UNA ventana a la vez (sus terminales
+  // viven ahí). El reclamo se hace al cargarlo y se suelta al cerrar la
+  // pestaña, al soltarlo hacia otra ventana o al cerrar la ventana.
+  ipcMain.handle('workspace:claim', (event, { profileId }) => claims.claim(profileId, event.sender.id));
+  ipcMain.handle('workspace:release', (event, { profileId }) => { claims.release(profileId, event.sender.id); });
+  ipcMain.handle('workspace:owner', (_e, { profileId }) => claims.ownerOf(profileId));
+  // La ventana nueva retira el mapa tileId → ptyId que dejó la anterior.
+  ipcMain.handle('handoff:take', (_e, { profileId }) => handoff.take(profileId));
   ipcMain.handle('profiles:exists', (_e, name) => storage.isNameTaken(name));
   ipcMain.handle('profiles:set-cwd', (_e, { id, cwd }) => storage.setCwd(id, cwd));
   ipcMain.handle('profiles:touch', (_e, id) => storage.touchLastOpened(id));
@@ -282,16 +306,27 @@ export function registerIpc({ app, profilesDir }) {
 
     if (agent) dispatcher.bind(agent, ptyId);
 
+    // `sender` es el webContents dueño de la terminal: el que la creó, o
+    // el que la recibió por traspaso (pty:attach). `ring` guarda la salida
+    // reciente para repintar la terminal en la ventana nueva.
+    // `shell` se guarda para la sonda de presencia del loop: sirve para
+    // saber si el proceso en primer plano volvió a ser el shell, o sea que
+    // el agente que corría ahí ya terminó. Ver loopDispatcher.js.
+    const entry = {
+      proc, writer: null, sender: event.sender, senderId: event.sender.id, shell: useShell,
+      ring: new OutputRing(),
+    };
+
     proc.onData((data) => {
-      // Reenviamos solo al webContents que creó esta pty
-      if (!event.sender.isDestroyed()) {
-        event.sender.send(`pty:data:${ptyId}`, data);
+      entry.ring.push(data);
+      if (!entry.sender.isDestroyed()) {
+        entry.sender.send(`pty:data:${ptyId}`, data);
       }
     });
 
     proc.onExit(({ exitCode }) => {
-      if (!event.sender.isDestroyed()) {
-        event.sender.send(`pty:exit:${ptyId}`, exitCode);
+      if (!entry.sender.isDestroyed()) {
+        entry.sender.send(`pty:exit:${ptyId}`, exitCode);
       }
       ptys.get(ptyId)?.writer.dispose();
       ptys.delete(ptyId);
@@ -300,14 +335,16 @@ export function registerIpc({ app, profilesDir }) {
     // Todo lo que se escribe al pty pasa por la cola: ConPTY (Windows)
     // pierde input ante escrituras grandes de golpe — de un pegado largo
     // sobrevive sólo la cola. Ver ptyWriteQueue.js.
-    const writer = createWriteQueue((data) => { proc.write(data); diag.chunk(ptyId, data); });
+    entry.writer = createWriteQueue((data) => { proc.write(data); diag.chunk(ptyId, data); });
 
-    // `shell` se guarda para la sonda de presencia del loop: sirve para
-    // saber si el proceso en primer plano volvió a ser el shell, o sea que
-    // el agente que corría ahí ya terminó. Ver loopDispatcher.js.
-    ptys.set(ptyId, { proc, writer, senderId: event.sender.id, shell: useShell });
+    ptys.set(ptyId, entry);
     return { ptyId, shell: useShell, cwdMissing };
   });
+
+  // Traspaso: la ventana nueva se vuelve dueña del pty y recibe la salida
+  // acumulada para repintar su terminal. Si el pty ya murió, ok:false y el
+  // renderer crea una terminal nueva.
+  ipcMain.handle('pty:attach', (event, { ptyId }) => attachPty(ptys.get(ptyId) || null, event.sender));
 
   ipcMain.on('pty:input', (_e, { ptyId, data }) => {
     const entry = ptys.get(ptyId);
@@ -489,6 +526,11 @@ export function registerIpc({ app, profilesDir }) {
     ipcMain.removeHandler('templates:list');
     ipcMain.removeHandler('templates:create');
     ipcMain.removeHandler('templates:delete');
+    ipcMain.removeHandler('pty:attach');
+    ipcMain.removeHandler('workspace:claim');
+    ipcMain.removeHandler('workspace:release');
+    ipcMain.removeHandler('workspace:owner');
+    ipcMain.removeHandler('handoff:take');
     for (const channel of [
       'loop:agents', 'loop:register', 'loop:unregister', 'loop:set-state',
       'loop:messages', 'loop:post', 'loop:inbox',
@@ -497,5 +539,24 @@ export function registerIpc({ app, profilesDir }) {
     ]) ipcMain.removeHandler(channel);
   };
 
-  return { storage, dispose };
+  /**
+   * Una ventana se cerró: suelta sus reclamos y mata los ptys que eran
+   * suyos (sin ventana que los muestre serían procesos fantasma).
+   */
+  function releaseWindow(webContentsId) {
+    claims.releaseAll(webContentsId);
+    for (const [ptyId, entry] of [...ptys]) {
+      if (entry.senderId !== webContentsId) continue;
+      try { entry.writer?.dispose(); } catch { /* noop */ }
+      try { entry.proc.kill(); } catch { /* noop */ }
+      ptys.delete(ptyId);
+    }
+  }
+
+  /** Guarda el mapa tileId → ptyId para la ventana que va a recibir el workspace. */
+  function stageHandoff(profileId, tileToPty) {
+    handoff.set(profileId, tileToPty || {});
+  }
+
+  return { storage, dispose, releaseWindow, stageHandoff, claims };
 }

@@ -25,6 +25,14 @@ export const ProfileManager = {
   },
 
   async load(id) {
+    // Un workspace vive en una sola ventana: si otra lo tiene abierto, se
+    // enfoca esa y acá no se carga (ver main/multiWindow.js).
+    const claim = await (window.yusepe.workspaces?.claim?.(id) ?? { ok: true });
+    if (claim && claim.ok === false) {
+      bus.emit('toast', { type: 'error', message: 'Este workspace está abierto en otra ventana.' });
+      window.yusepe.windows?.focusOwner?.(id);
+      return null;
+    }
     const previousId = state.activeProfileId;
     if (previousId && previousId !== id) {
       // Desmonta (sin matar) las terminales del workspace anterior antes
