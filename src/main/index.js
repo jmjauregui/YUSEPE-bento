@@ -25,6 +25,13 @@ const IMAGE_MIME = {
 // __dirname está disponible en CJS (electron-vite compila main a CJS).
 const isDev = !app.isPackaged;
 
+// Carpeta de datos alternativa (perfiles, snippets, plantillas). La usan
+// las pruebas E2E para no tocar los datos reales del usuario; tiene que
+// fijarse antes de `app.whenReady()`.
+if (process.env.YUSEPE_USER_DATA) {
+  app.setPath('userData', process.env.YUSEPE_USER_DATA);
+}
+
 let mainWindow = null;
 let ipcHandle = null;
 
