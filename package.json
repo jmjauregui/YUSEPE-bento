@@ -37,7 +37,7 @@
   "devDependencies": {
     "@eslint/js": "^9.39.4",
     "autoprefixer": "^10.4.20",
-    "electron": "github:castlabs/electron-releases#v33.4.11+wvcus",
+    "electron": "github:castlabs/electron-releases#v44.1.0+wvcus",
     "electron-builder": "^24.13.3",
     "electron-rebuild": "^3.2.9",
     "electron-vite": "^2.3.0",
