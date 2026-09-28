@@ -62,11 +62,15 @@ async function loadUserTemplates() {
 export function pickTemplate() {
   return new Promise((resolve) => {
     let settled = false;
+    // Mientras el selector cierra el modal por su cuenta (para mostrar un
+    // confirm y reabrirse), el onClose del modal no debe resolver `null`.
+    let ignoreClose = false;
     const finish = (value) => {
       if (settled) return;
       settled = true;
       resolve(value);
     };
+    const onClose = () => { if (!ignoreClose) finish(null); };
 
     const list = h('div', { class: 'grid grid-cols-2 gap-3 max-h-[62vh] overflow-auto pr-1' });
     const body = h('div', {}, [
@@ -75,11 +79,11 @@ export function pickTemplate() {
       list,
       h('button', {
         class: 'mt-3 w-full bg-bg-elev hover:bg-line text-fg-soft text-sm py-2 rounded-md transition',
-        onClick: () => { closeModal(); finish(null); },
+        onClick: () => { finish(null); closeModal(); },
       }, 'Cancelar'),
     ]);
 
-    openModal({ title: 'Distribución del workspace', body, size: 'lg', onClose: () => finish(null) });
+    openModal({ title: 'Distribución del workspace', body, size: 'lg', onClose });
 
     render();
 
@@ -98,7 +102,9 @@ export function pickTemplate() {
       const el = h('button', {
         type: 'button',
         class: 'text-left rounded-lg border border-line hover:border-accent hover:bg-bg-elev/60 p-3 transition flex flex-col gap-2 focus:outline-none focus:ring-1 focus:ring-accent',
-        onClick: () => { closeModal(); finish(template); },
+        // Resolver ANTES de cerrar: closeModal() dispara onClose, que de
+        // otro modo resolvería null y cancelaría la creación.
+        onClick: () => { finish(template); closeModal(); },
       }, [
         templateThumbnail(template),
         h('div', { class: 'flex items-start gap-2' }, [
@@ -119,8 +125,9 @@ export function pickTemplate() {
               e.preventDefault();
               // El confirm abre su propio modal encima; al volver, se
               // reabre el selector con la lista actualizada.
+              ignoreClose = true;
               closeModal();
-              settled = false;
+              ignoreClose = false;
               const ok = await confirmModal({
                 title: 'Borrar plantilla',
                 body: `¿Borrar la plantilla "${template.name}"? Los workspaces ya creados con ella no cambian.`,
@@ -131,7 +138,8 @@ export function pickTemplate() {
                 try { await window.yusepe.templates.delete(template.id); }
                 catch (err) { bus.emit('toast', { type: 'error', message: err?.message || String(err) }); }
               }
-              openModal({ title: 'Distribución del workspace', body, size: 'lg', onClose: () => finish(null) });
+              if (settled) return;
+              openModal({ title: 'Distribución del workspace', body, size: 'lg', onClose });
               render();
             },
           }, svgIcon('trash', { size: 13 })) : null,
