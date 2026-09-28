@@ -18,8 +18,8 @@ export const ProfileManager = {
     return state.profiles;
   },
 
-  async create(name, cwd = null) {
-    const profile = await api().create({ name: name || 'Nuevo perfil', cwd });
+  async create(name, cwd = null, tiles = []) {
+    const profile = await api().create({ name: name || 'Nuevo perfil', cwd, tiles });
     await this.refresh();
     return profile;
   },

@@ -103,15 +103,23 @@ export class ProfileStorage {
     );
   }
 
-  /** Crea un perfil vacío. Valida unicidad de nombre. `cwd` es la carpeta de inicio del workspace. */
-  async create({ name = 'Nuevo perfil', cwd = null } = {}) {
+  /**
+   * Crea un perfil. Valida unicidad de nombre. `cwd` es la carpeta de inicio
+   * del workspace. `tiles` (opcional) son los tiles iniciales de una
+   * plantilla de distribución, ya en coordenadas de la grilla actual; a los
+   * que vengan sin `id` se les asigna uno.
+   */
+  async create({ name = 'Nuevo perfil', cwd = null, tiles = [] } = {}) {
     if (await this.isNameTaken(name)) {
       throw new Error(`Ya existe un perfil llamado "${name}"`);
     }
     await this._ensureDir();
     const id = randomUUID();
     const now = Date.now();
-    const profile = { id, name, cwd: cwd || null, createdAt: now, updatedAt: now, tiles: [], gridVersion: GRID_VERSION };
+    const initialTiles = Array.isArray(tiles)
+      ? tiles.map((t) => ({ ...t, id: t.id || randomUUID() }))
+      : [];
+    const profile = { id, name, cwd: cwd || null, createdAt: now, updatedAt: now, tiles: initialTiles, gridVersion: GRID_VERSION };
     // _writeProfile ya actualiza el índice. NO hacer push adicional.
     await this._writeProfile(profile);
     return profile;

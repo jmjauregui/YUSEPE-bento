@@ -141,6 +141,29 @@ describe('ProfileStorage.setWallpaper', () => {
   });
 });
 
+describe('ProfileStorage.create — tiles iniciales (plantillas)', () => {
+  it('persiste los tiles recibidos y completa los ids que falten', async () => {
+    const created = await storage.create({
+      name: 'Con plantilla',
+      tiles: [
+        { kind: 'terminal', col: 1, row: 1, colSpan: 12, rowSpan: 20 },
+        { id: 'fijo', kind: 'tasks', col: 13, row: 1, colSpan: 12, rowSpan: 20 },
+      ],
+    });
+    const loaded = await storage.load(created.id);
+    expect(loaded.tiles).toHaveLength(2);
+    expect(typeof loaded.tiles[0].id).toBe('string');
+    expect(loaded.tiles[0].id.length).toBeGreaterThan(0);
+    expect(loaded.tiles[1].id).toBe('fijo');
+    expect(loaded.gridVersion).toBe(3);
+  });
+
+  it('tiles que no son array se ignoran', async () => {
+    const created = await storage.create({ name: 'Raro', tiles: 'x' });
+    expect(created.tiles).toEqual([]);
+  });
+});
+
 describe('ProfileStorage.importProfile', () => {
   it('crea un perfil nuevo con id propio (nunca reutiliza el del archivo)', async () => {
     const raw = { id: 'id-original', name: 'Deploy', cwd: '/tmp', tiles: [], gridVersion: 3 };
