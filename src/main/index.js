@@ -299,13 +299,12 @@ app.whenReady().then(async () => {
   // esperar a `components.whenReady()` fuerza su instalación la primera vez
   // para que Netflix y similares funcionen desde el primer webview. Con el
   // Electron oficial `components` no existe y se salta.
+  // No bloquea el arranque: si la instalación falla o tarda (sin red, o
+  // sin firma VMP), la app abre igual y el CDM queda para el próximo intento.
   if (components?.whenReady) {
-    try {
-      await components.whenReady();
-      console.info('[widevine] componentes listos:', JSON.stringify(components.status?.() ?? null));
-    } catch (err) {
-      console.warn('[widevine] no se pudo instalar el CDM:', err?.message || err);
-    }
+    components.whenReady()
+      .then(() => console.info('[widevine] componentes listos:', JSON.stringify(components.status?.() ?? null)))
+      .catch((err) => console.warn('[widevine] no se pudo instalar el CDM:', err?.message || err));
   }
   configureSession();
 
