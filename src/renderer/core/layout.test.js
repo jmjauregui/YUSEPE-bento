@@ -8,7 +8,22 @@ import {
   resolveRowShrink,
   moveTileTo,
   findNeighbor,
+  GRID_COLS,
 } from './layout.js';
+
+describe('GRID_COLS', () => {
+  it('el grid tiene 24 columnas', () => {
+    expect(GRID_COLS).toBe(24);
+  });
+
+  it('findEmptySpot usa 24 como ancho por defecto', () => {
+    // Fila 1 ocupada en las 23 primeras columnas: un tile de ancho 2 no cabe
+    // en la columna 24 y baja a la fila 2; uno de ancho 1 sí entra en la 24.
+    const occupied = new Set(Array.from({ length: 23 }, (_, i) => `${i + 1},1`));
+    expect(findEmptySpot(2, 1, occupied)).toEqual({ col: 1, row: 2 });
+    expect(findEmptySpot(1, 1, occupied)).toEqual({ col: 24, row: 1 });
+  });
+});
 
 describe('findEmptySpot', () => {
   it('devuelve la esquina superior izquierda en un grid vacío', () => {
@@ -269,7 +284,8 @@ describe('moveTileTo', () => {
     // A (fila 1) cae sobre B (fila 3). Para B no hay hueco en su fila
     // (D ocupa la izquierda) ni abajo (G1-G3 llenan hasta la fila 10):
     // sin swap terminaría en la fila 11, fuera de lo visible.
-    moveTileTo(tiles, 'A', 7, 3);
+    // El escenario está armado sobre 12 columnas: se pasa explícito.
+    moveTileTo(tiles, 'A', 7, 3, 12);
     expect(tiles.find((t) => t.id === 'A')).toMatchObject({ col: 7, row: 3 });
     expect(tiles.find((t) => t.id === 'B')).toMatchObject({ col: 1, row: 1 });
     // El resto no se movió.
