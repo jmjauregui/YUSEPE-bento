@@ -3,6 +3,7 @@
  * --------------------------------------------------------------
  * Expone una API mínima y explícita al renderer.
  *   - window.yusepe.profiles  -> CRUD de perfiles
+ *   - window.yusepe.templates -> plantillas de distribución del usuario
  *   - window.yusepe.pty       -> ciclo de vida de la terminal
  *   - window.yusepe.tools     -> detección de CLIs instaladas
  *   - window.yusepe.shell     -> utilidades (abrir URL externa)
@@ -151,6 +152,14 @@ contextBridge.exposeInMainWorld('yusepe', {
     create: (payload) => ipcRenderer.invoke('snippets:create', payload),
     update: (id, patch) => ipcRenderer.invoke('snippets:update', { id, ...patch }),
     delete: (id) => ipcRenderer.invoke('snippets:delete', { id }),
+  },
+
+  // Plantillas de distribución guardadas por el usuario (ver
+  // renderer/core/layoutTemplates.js para las incorporadas).
+  templates: {
+    list: () => ipcRenderer.invoke('templates:list'),
+    create: (payload) => ipcRenderer.invoke('templates:create', payload),
+    delete: (id) => ipcRenderer.invoke('templates:delete', { id }),
   },
 
   shell: {

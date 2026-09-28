@@ -22,6 +22,7 @@ import { createDispatcher, looksLikeShell } from './loopDispatcher.js';
 import { buildPtyEnv, ensureShim } from './loopShim.js';
 import { createWriteQueue } from './ptyWriteQueue.js';
 import { SnippetsStore } from './snippetsOps.js';
+import { TemplatesStore } from './templatesOps.js';
 import * as diag from './loopDiag.js';
 
 // Carga pty de forma perezosa: si falla (p.ej. sin recompilar)
@@ -45,6 +46,7 @@ function getPty() {
 export function registerIpc({ app, profilesDir }) {
   const storage = new ProfileStorage(profilesDir);
   const snippets = new SnippetsStore(join(app.getPath('userData'), 'snippets.json'));
+  const templates = new TemplatesStore(join(app.getPath('userData'), 'layout-templates.json'));
 
   // Shim del CLI `ybento` (ver loopShim.js). Se genera al arrancar y no al
   // crear el primer loop: así una terminal cualquiera ya lo tiene en el
@@ -225,6 +227,11 @@ export function registerIpc({ app, profilesDir }) {
   ipcMain.handle('snippets:create', (_e, payload) => snippets.create(payload));
   ipcMain.handle('snippets:update', (_e, { id, ...patch }) => snippets.update(id, patch));
   ipcMain.handle('snippets:delete', (_e, { id }) => snippets.remove(id));
+
+  // -------- Plantillas de distribución (guardadas por el usuario) --------
+  ipcMain.handle('templates:list', () => templates.list());
+  ipcMain.handle('templates:create', (_e, payload) => templates.create(payload));
+  ipcMain.handle('templates:delete', (_e, { id }) => templates.remove(id));
 
   // -------- PTY / Terminal --------
   /** Mapa de ptyId -> { proc, senderId } */
@@ -479,6 +486,9 @@ export function registerIpc({ app, profilesDir }) {
     ipcMain.removeHandler('snippets:create');
     ipcMain.removeHandler('snippets:update');
     ipcMain.removeHandler('snippets:delete');
+    ipcMain.removeHandler('templates:list');
+    ipcMain.removeHandler('templates:create');
+    ipcMain.removeHandler('templates:delete');
     for (const channel of [
       'loop:agents', 'loop:register', 'loop:unregister', 'loop:set-state',
       'loop:messages', 'loop:post', 'loop:inbox',
