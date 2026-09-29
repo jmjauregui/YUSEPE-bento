@@ -7,7 +7,7 @@
  * que funcionan incluso cuando un <webview> tiene el foco.
  * --------------------------------------------------------------
  */
-import { app, BrowserWindow, shell, session, ipcMain, Menu, nativeTheme, dialog, components } from 'electron';
+import { app, BrowserWindow, shell, session, ipcMain, Menu, nativeTheme, dialog, components, systemPreferences } from 'electron';
 import { join, extname } from 'path';
 import { promises as fs } from 'fs';
 import { registerIpc } from './ipc.js';
@@ -269,12 +269,49 @@ function createWindow({ profileId = null } = {}) {
   return win;
 }
 
+// Permisos que un sitio puede pedir. Vale para TODAS las sesiones: la
+// por defecto (la UI de Bento) y las particiones `persist:yusepe-<tile>`
+// de cada webview (ver renderer/components/webviewTile.js), que antes
+// quedaban sin handler.
+//   - `media` (micrófono/cámara, p.ej. Discord, Meet): se permite, y en
+//     macOS antes se le pide el acceso al sistema (TCC). Sin ese pedido
+//     explícito el dispositivo aparece pero entrega silencio.
+const ALLOWED_PERMISSIONS = ['clipboard-sanitized-write', 'clipboard-read', 'fullscreen', 'mediaKeySystem', 'media'];
+
+async function askMediaAccess(mediaTypes = []) {
+  if (process.platform !== 'darwin') return true;
+  let ok = true;
+  for (const kind of ['microphone', 'camera']) {
+    const wanted = kind === 'microphone' ? mediaTypes.includes('audio') : mediaTypes.includes('video');
+    if (!wanted) continue;
+    try {
+      const status = systemPreferences.getMediaAccessStatus(kind);
+      const granted = status === 'granted' ? true : await systemPreferences.askForMediaAccess(kind);
+      if (!granted) { ok = false; console.warn(`[permisos] macOS negó ${kind} (estado previo: ${status})`); }
+    } catch (err) {
+      console.warn(`[permisos] no se pudo consultar ${kind}:`, err?.message || err);
+    }
+  }
+  return ok;
+}
+
+function applyPermissionHandler(ses) {
+  ses.setPermissionRequestHandler((_wc, permission, callback, details) => {
+    if (!ALLOWED_PERMISSIONS.includes(permission)) return callback(false);
+    if (permission === 'media') {
+      askMediaAccess(details?.mediaTypes || []).then(callback, () => callback(false));
+      return;
+    }
+    callback(true);
+  });
+}
+
 function configureSession() {
   const ses = session.defaultSession;
-
-  ses.setPermissionRequestHandler((_wc, permission, callback) => {
-    const allowed = ['clipboard-sanitized-write', 'clipboard-read', 'fullscreen', 'mediaKeySystem'];
-    callback(allowed.includes(permission));
+  applyPermissionHandler(ses);
+  // Las particiones de los webviews se crean después, al montarse cada tile.
+  app.on('session-created', (created) => {
+    if (created !== ses) applyPermissionHandler(created);
   });
 
   ses.webRequest.onHeadersReceived((details, cb) => {

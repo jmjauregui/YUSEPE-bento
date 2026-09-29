@@ -39,18 +39,10 @@ export function createWebviewTile(tile, profileId) {
     webpreferences: 'contextIsolation=true, nodeIntegration=false',
   });
 
+  // Los permisos (micrófono, portapapeles, DRM…) los decide el main para
+  // todas las sesiones, incluida la partición de este webview: ver
+  // configureSession() en main/index.js.
   webview.addEventListener('did-attach', () => {
-    try {
-      const ses = webview.getWebContents?.()?.session;
-      if (ses) {
-        ses.setPermissionRequestHandler((_wc, permission, callback) => {
-          const allowed = ['clipboard-sanitized-write', 'clipboard-read', 'fullscreen', 'mediaKeySystem'];
-          callback(allowed.includes(permission));
-        });
-      }
-    } catch (err) {
-      console.warn('[webview] permisos:', err);
-    }
     // Zoom por-tile persistido (ver components/workspaceManager.js). Se
     // fuerza a nivel Chromium (setZoomFactor), así que funciona incluso en
     // sitios que bloquean el zoom del navegador con CSS/meta viewport.
