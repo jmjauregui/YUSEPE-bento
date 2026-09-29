@@ -97,7 +97,7 @@ export async function createTerminalTile(tile, profileId) {
   const dot = h('div', {
     class: 'tile-activity-dot',
     title: 'Terminó de trabajar',
-  });
+  }, 'listo');
 
   const root = h('div', {
     class: 'tile',
