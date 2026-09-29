@@ -44,17 +44,18 @@ try {
   await page.waitForSelector('#profile-screen:not(.hidden)', { timeout: 15000 });
   await page.locator('#profile-list').getByText('Actividad').first().click();
   await page.waitForSelector('#bento .tile[data-tile-id="tb"] .xterm', { timeout: 20000 });
-  // Deja pasar el arranque (3 s no cuentan) y que ambos shells estén listos.
-  await page.waitForTimeout(3500);
+  // Gracia de 10 s desde el primer byte del shell (core/activityState.js).
+  await page.waitForTimeout(11_000);
   check(!(await cls('ta')).includes('is-working'), 'la terminal A arranca sin marca de actividad');
 
   // Escribe en A un comando que produce salida durante ~2 s, y enfoca B.
   await page.locator('#bento .tile[data-tile-id="ta"]').dispatchEvent('mousedown');
   await page.locator('#bento .tile[data-tile-id="ta"] .xterm-helper-textarea').focus();
-  await page.keyboard.type('for i in 1 2 3 4 5 6 7 8; do echo "trabajando $i ......................................"; sleep 0.25; done; echo LISTO');
+  // ≥ 3 segundos distintos con salida y ≥ 3 s de trabajo: 14 líneas cada 0,3 s.
+  await page.keyboard.type('for i in $(seq 1 14); do echo "trabajando $i ......................................"; sleep 0.3; done; echo LISTO');
   await page.keyboard.press('Enter');
   await page.locator('#bento .tile[data-tile-id="tb"]').dispatchEvent('mousedown');
-  await page.waitForFunction(() => document.querySelector('#bento .tile[data-tile-id="ta"]').classList.contains('is-working'), null, { timeout: 4000 });
+  await page.waitForFunction(() => document.querySelector('#bento .tile[data-tile-id="ta"]').classList.contains('is-working'), null, { timeout: 6000 });
   check(true, 'A pasa a is-working mientras escribe');
   check((await cls('tb')).includes('focused') && !(await cls('ta')).includes('focused'), 'B tiene el foco y A no');
 

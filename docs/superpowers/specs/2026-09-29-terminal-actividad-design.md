@@ -39,3 +39,10 @@ incluye como «quieto» la espera de una confirmación (que también conviene ve
 - E2E `e2e/actividad.mjs`: dos terminales; en la NO enfocada se escribe `sleep 2; echo listo`
   (vía el pty de la otra ventana no: se enfoca, se escribe, se enfoca la otra) → `is-working` aparece,
   luego `is-done` (≤ 5 s), y al hacer clic desaparece.
+
+## Corrección 2026-09-29 (Abel: «sesiones ociosas lanzan listo»)
+MEDIDO con node-pty: `claude --resume` local pinta 413 B (s0), 4.098 B (s1), 13 B (s2), 79 B (s3), 199 B (s4) y un
+repintado aislado de 44 B en s11; un claude nuevo local: 413/960/121/199 B en s0-s3 y 44 B en s11; por ssh al mini
+todo llega más tarde. Con gracia de 3 s desde el pty y 20 B mínimos, el s4 y el s11 daban working → done → «listo».
+Reglas nuevas: gracia 10 s desde el PRIMER byte; working solo con salida en ≥ 3 segundos distintos y ≥ 300 B en una
+ventana de 5 s; «listo» solo si working duró ≥ 3 s (si no, vuelve a idle en silencio).
