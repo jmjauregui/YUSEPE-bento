@@ -93,6 +93,16 @@ try {
   const stillWebview = await page.locator('#bento .tile[data-tile-id="w-off"] webview').count();
   check(stillWebview === 1, 'el <webview> sigue en su lugar tras ocultar la barra');
 
+  // 4b. el botón ⌕ (junto al grip) también enciende la barra, sin teclado
+  const toggleCount = await page.locator('#bento .tile[data-tile-id="w-off"] .webview-navbar-toggle:not([hidden])').count();
+  check(toggleCount === 1, 'el tile sin barra ofrece el botón ⌕ para mostrarla');
+  await page.locator('#bento .tile[data-tile-id="w-off"] .webview-navbar-toggle').click({ force: true });
+  await page.waitForSelector('#bento .tile[data-tile-id="w-off"] .webview-navbar', { timeout: 5000 });
+  const toggleHidden = await page.locator('#bento .tile[data-tile-id="w-off"] .webview-navbar-toggle[hidden]').count();
+  check(toggleHidden === 1, 'el botón ⌕ enciende la barra y se esconde mientras está encendida');
+  await page.locator('#bento .tile[data-tile-id="w-off"] .webview-navbar-hide').click();
+  await page.waitForFunction(() => !document.querySelector('#bento .tile[data-tile-id="w-off"] .webview-navbar'), null, { timeout: 5000 });
+
   // 5. Enter en la dirección navega (búsqueda)
   const started = page.evaluate(() => new Promise((resolve) => {
     const wv = document.querySelector('#bento .tile[data-tile-id="w-on"] webview');

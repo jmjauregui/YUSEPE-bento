@@ -71,10 +71,20 @@ export function createWebviewTile(tile, profileId) {
     bus.emit('tile:focus', { id: tile.id });
   });
 
+  // Botón «mostrar barra» junto al grip de mover (esquina superior
+  // izquierda, visible al pasar el mouse): la vía sin teclado para
+  // encender la barra. Con la barra encendida no hace falta (tiene ⌄).
+  const navToggle = h('button', {
+    class: 'webview-navbar-toggle',
+    type: 'button',
+    title: 'Mostrar barra de navegación (Cmd+L)',
+    onClick: (e) => { e.stopPropagation(); ProfileManager.updateTile(tile.id, { nav: true }); },
+  }, '⌕');
+
   const root = h('div', {
     class: 'tile tile-webview',
     dataset: { tileId: tile.id, kind: tile.kind },
-  }, [webview, errorOverlay]);
+  }, [webview, errorOverlay, navToggle]);
 
   // ---- Barra de navegación (tile.nav === true) ----
   let navBar = null;
@@ -98,14 +108,17 @@ export function createWebviewTile(tile, profileId) {
     });
     root.prepend(navBar.root);
     root.classList.add('has-navbar');
+    navToggle.hidden = true;
   }
   function unmountNav() {
     if (!navBar) return;
     navBar.dispose();
     navBar = null;
     root.classList.remove('has-navbar');
+    navToggle.hidden = false;
   }
   if (navOn) mountNav();
+  navToggle.hidden = navOn;
   webview.addEventListener('did-navigate', persistUrl);
   bus.on('tile:updated', ({ id, patch }) => {
     if (id !== tile.id || !patch || !('nav' in patch)) return;

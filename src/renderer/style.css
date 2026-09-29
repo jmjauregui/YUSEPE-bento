@@ -647,4 +647,28 @@
     outline: none;
   }
   .webview-navbar-address:focus { border-color: rgb(var(--color-accent-rgb) / 0.6); }
+  /* Botón «mostrar barra»: al lado del grip de mover, mismo comportamiento
+     de aparecer con hover/foco del tile. */
+  .webview-navbar-toggle {
+    position: absolute;
+    top: 0;
+    left: 28px;
+    width: 28px;
+    height: 28px;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 15px;
+    color: rgba(255, 255, 255, 0.55);
+    background: rgb(var(--color-tile-bg-rgb) / 0.85);
+    border-bottom-right-radius: 6px;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  .tile:hover .webview-navbar-toggle,
+  .tile.focused .webview-navbar-toggle,
+  .webview-navbar-toggle:hover { opacity: 1; }
+  .webview-navbar-toggle:hover { color: var(--color-accent); }
+  .webview-navbar-toggle[hidden] { display: none; }
 }
