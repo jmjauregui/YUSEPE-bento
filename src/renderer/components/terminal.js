@@ -11,6 +11,7 @@ import { ClipboardAddon } from '@xterm/addon-clipboard';
 import '@xterm/xterm/css/xterm.css';
 import { h, debounce, escapeHtml } from '../utils/dom.js';
 import { bus } from '../core/eventBus.js';
+import { createActivity } from '../core/activityState.js';
 import { state } from '../core/state.js';
 import * as liveTiles from '../core/liveTiles.js';
 
@@ -91,10 +92,29 @@ export async function createTerminalTile(tile, profileId) {
     if (tileId === tile.id) paintBadge(name);
   });
 
+  // Punto «terminó de trabajar»: aparece cuando la terminal deja de
+  // escribir y el tile no tiene el foco. Ver core/activityState.js.
+  const dot = h('div', {
+    class: 'tile-activity-dot',
+    title: 'Terminó de trabajar',
+  });
+
   const root = h('div', {
     class: 'tile',
     dataset: { tileId: tile.id, kind: 'terminal' },
-  }, [body, badge]);
+  }, [body, badge, dot]);
+
+  // Color de actividad: trabajando (hay salida) / terminó sin foco.
+  const activity = createActivity({
+    isFocused: () => root.classList.contains('focused'),
+    onChange: (s) => {
+      root.classList.toggle('is-working', s === 'working');
+      root.classList.toggle('is-done', s === 'done');
+    },
+  });
+  const offFocused = bus.on('tile:focused', ({ id }) => {
+    if (id === tile.id) activity.focus();
+  });
 
   let term = null;
   let fit = null;
@@ -226,7 +246,7 @@ export async function createTerminalTile(tile, profileId) {
         cwdMissing = created.cwdMissing;
       }
 
-      offData = window.yusepe.pty.onData(ptyId, (data) => term.write(data));
+      offData = window.yusepe.pty.onData(ptyId, (data) => { term.write(data); activity.data(data.length); });
       offExit = window.yusepe.pty.onExit(ptyId, (code) => {
         term.writeln(`\r\n\x1b[2m[proceso finalizado con código ${code}]\x1b[0m`);
       });
@@ -301,7 +321,7 @@ export async function createTerminalTile(tile, profileId) {
   // Suelta la vista sin tocar el proceso: el pty sigue corriendo en main y
   // otra ventana se va a enganchar a él (ver liveTiles.release).
   function detachView() {
-    try { offData?.(); offExit?.(); offTheme?.(); offLoop?.(); } catch { /* noop */ }
+    try { offData?.(); offExit?.(); offTheme?.(); offLoop?.(); offFocused?.(); activity.dispose(); } catch { /* noop */ }
     ptyId = null;
     term?.dispose();
     term = null;
@@ -310,7 +330,7 @@ export async function createTerminalTile(tile, profileId) {
   }
 
   async function killReal() {
-    try { offData?.(); offExit?.(); offTheme?.(); offLoop?.(); } catch { /* noop */ }
+    try { offData?.(); offExit?.(); offTheme?.(); offLoop?.(); offFocused?.(); activity.dispose(); } catch { /* noop */ }
     if (ptyId) { try { window.yusepe.pty.kill(ptyId); } catch { /* noop */ } ptyId = null; }
     term?.dispose();
     term = null;

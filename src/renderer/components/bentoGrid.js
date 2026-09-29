@@ -114,6 +114,9 @@ function focusTile(tileId) {
   document.querySelectorAll('.tile').forEach((el) => {
     el.classList.toggle('focused', el.dataset.tileId === tileId);
   });
+  // Los tiles que muestran «terminó de trabajar» lo limpian al recibir el
+  // foco (ver components/terminal.js · core/activityState.js).
+  bus.emit('tile:focused', { id: tileId });
 }
 
 // Los tiles webview notifican su foco vía bus (ver webviewTile.js),
