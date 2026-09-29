@@ -1,26 +1,20 @@
 /**
  * src/renderer/components/webviewTile.js
  * --------------------------------------------------------------
- * Tile webview SIN header. El <webview> llena el 100% del tile.
- * Overlay de error visible si la carga falla.
+ * Tile webview. El <webview> llena el tile; si el tile tiene `nav: true`
+ * lleva encima una barra de navegación (‹ › ↻ dirección ⌄, ver
+ * webviewNavBar.js) que se monta/desmonta en caliente al cambiar `nav`
+ * en el perfil, sin tocar el <webview>. Overlay de error si la carga falla.
  * --------------------------------------------------------------
  */
-import { h } from '../utils/dom.js';
+import { h, debounce } from '../utils/dom.js';
 import { bus } from '../core/eventBus.js';
 import * as liveTiles from '../core/liveTiles.js';
+import { ProfileManager } from '../core/profileManager.js';
+import { normalizeUrl, navEnabled } from '../core/browserNav.js';
+import { createWebviewNavBar } from './webviewNavBar.js';
 
-const SAFE_PROTOCOLS = /^https?:\/\//i;
-
-export function normalizeUrl(input) {
-  if (!input) return null;
-  let url = input.trim();
-  if (!SAFE_PROTOCOLS.test(url)) {
-    if (/^[\w-]+(\.[\w-]+)+/.test(url)) url = 'https://' + url;
-    else return null;
-  }
-  try { return new URL(url).toString(); }
-  catch { return null; }
-}
+export { normalizeUrl };
 
 export function createWebviewTile(tile, profileId) {
   // Si esta webview ya está viva (el usuario volvió a este workspace),
@@ -86,9 +80,46 @@ export function createWebviewTile(tile, profileId) {
   });
 
   const root = h('div', {
-    class: 'tile',
+    class: 'tile tile-webview',
     dataset: { tileId: tile.id, kind: tile.kind },
   }, [webview, errorOverlay]);
+
+  // ---- Barra de navegación (tile.nav === true) ----
+  let navBar = null;
+  let navOn = navEnabled(tile);
+  // Con la barra encendida, la última página visitada queda en el perfil
+  // para que el tile reabra ahí tras un reinicio. Con la barra apagada el
+  // tile se comporta como siempre (url fija del perfil).
+  const persistUrl = debounce(() => {
+    if (!navOn) return;
+    let url = null;
+    try { url = webview.getURL(); } catch { /* noop */ }
+    if (url && /^https?:/i.test(url) && url !== tile.url) {
+      tile.url = url;
+      ProfileManager.updateTile(tile.id, { url }).catch(() => {});
+    }
+  }, 500);
+  function mountNav() {
+    if (navBar) return;
+    navBar = createWebviewNavBar(webview, {
+      onHide: () => ProfileManager.updateTile(tile.id, { nav: false }),
+    });
+    root.prepend(navBar.root);
+    root.classList.add('has-navbar');
+  }
+  function unmountNav() {
+    if (!navBar) return;
+    navBar.dispose();
+    navBar = null;
+    root.classList.remove('has-navbar');
+  }
+  if (navOn) mountNav();
+  webview.addEventListener('did-navigate', persistUrl);
+  bus.on('tile:updated', ({ id, patch }) => {
+    if (id !== tile.id || !patch || !('nav' in patch)) return;
+    navOn = patch.nav === true;
+    if (navOn) mountNav(); else unmountNav();
+  });
 
   // El kill real destruye el <webview> de verdad (saca el guest del DOM
   // para siempre). Desmontar por cambio de workspace NO pasa por acá —
@@ -98,7 +129,8 @@ export function createWebviewTile(tile, profileId) {
     try { webview.remove(); } catch { /* noop */ }
   }
   liveTiles.register(tile.id, {
-    profileId, kind: 'webview', node: root, kill: killReal, meta: { webview },
+    profileId, kind: 'webview', node: root, kill: killReal,
+    meta: { webview, focusAddress: () => navBar?.focusAddress() },
   });
 
   return { root, webview };
