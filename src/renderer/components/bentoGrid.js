@@ -19,6 +19,7 @@ import { renderTile } from './tile.js';
 import { ProfileManager } from '../core/profileManager.js';
 import { GRID_COLS, findEmptySpot, resolveColGrowth, resolveRowGrowth, moveTileTo, findNeighbor } from '../core/layout.js';
 import * as liveTiles from '../core/liveTiles.js';
+import { navEnabled } from '../core/browserNav.js';
 
 const GAP = 8;
 const MIN_ROW_PX = 35;
@@ -624,6 +625,18 @@ export async function renderBento() {
   }
 
   bus.emit('bento:rendered', { count: tiles.length });
+}
+
+/**
+ * Cmd+L (menú Tile › Barra de dirección): sobre un webview enfocado,
+ * enciende su barra de navegación si estaba apagada y pone el cursor en
+ * la dirección, como en un navegador.
+ */
+export async function toggleAddressBar() {
+  const tile = state.profile?.tiles?.find((t) => t.id === focusedTileId);
+  if (!tile || tile.kind !== 'webview') return;
+  if (!navEnabled(tile)) await ProfileManager.updateTile(tile.id, { nav: true });
+  liveTiles.get(tile.id)?.meta?.focusAddress?.();
 }
 
 export async function closeFocusedTile() {

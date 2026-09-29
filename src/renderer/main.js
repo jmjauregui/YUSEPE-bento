@@ -8,7 +8,7 @@
 import { ProfileManager } from './core/profileManager.js';
 import { state } from './core/state.js';
 import { bus } from './core/eventBus.js';
-import { renderBento, closeFocusedTile, focusNeighbor, moveFocusedTile } from './components/bentoGrid.js';
+import { renderBento, closeFocusedTile, focusNeighbor, moveFocusedTile, toggleAddressBar } from './components/bentoGrid.js';
 import { TileFactory } from './components/tile.js';
 import { openAddToSpace } from './components/addToSpace.js';
 import { openSettings } from './components/settings.js';
@@ -572,6 +572,7 @@ window.yusepe.menu.onSettings(() => openSettings());
 window.yusepe.menu.onTileAction(({ type, dir }) => {
   if (type === 'focus') focusNeighbor(dir);
   else if (type === 'move') moveFocusedTile(dir);
+  else if (type === 'address-bar') toggleAddressBar();
 });
 
 // `?` abre el cheatsheet de atajos — salvo que estés tipeando en un campo

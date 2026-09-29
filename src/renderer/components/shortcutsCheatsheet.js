@@ -36,6 +36,7 @@ const GROUPS = [
       [[MOD, 'T'], 'Nueva terminal'],
       [[MOD, 'B'], 'Nueva calculadora'],
       [[MOD, 'W'], 'Cerrar tile enfocado'],
+      [[MOD, 'L'], 'Barra de dirección del webview enfocado'],
     ],
   },
   {

@@ -122,6 +122,7 @@ export function openWorkspaceManager() {
         h('th', { class: 'py-1.5 pr-2 font-medium w-40' }, 'Nombre'),
         h('th', { class: 'py-1.5 pr-2 font-medium w-16' }, 'Tamaño'),
         h('th', { class: 'py-1.5 pr-2 font-medium' }, 'Comando / URL'),
+        h('th', { class: 'py-1.5 pr-2 font-medium w-14' }, 'Barra'),
         h('th', { class: 'py-1.5 pr-2 font-medium w-36' }, 'Zoom'),
         h('th', { class: 'py-1.5 pr-2 font-medium w-10' }, ''),
       ]),
@@ -130,7 +131,7 @@ export function openWorkspaceManager() {
     const tbody = h('tbody', {});
     if (!tiles.length) {
       tbody.append(h('tr', {}, [
-        h('td', { colspan: '5', class: 'py-4 text-fg-subtle text-center' },
+        h('td', { colspan: '6', class: 'py-4 text-fg-subtle text-center' },
           'Este workspace no tiene tiles abiertos.'),
       ]));
     } else {
@@ -145,6 +146,7 @@ export function openWorkspaceManager() {
       h('td', { class: 'py-2 pr-2 whitespace-nowrap truncate' }, labelFor(tile)),
       h('td', { class: 'py-2 pr-2 whitespace-nowrap text-fg-subtle' }, `${tile.colSpan || 1}x${tile.rowSpan || 1}`),
       commandOrUrlCell(tile),
+      navCell(tile),
       zoomCell(tile),
       actionsCell(tile),
     );
@@ -227,6 +229,28 @@ export function openWorkspaceManager() {
     }
 
     td.append(h('span', { class: 'text-fg-subtle' }, '—'));
+    return td;
+  }
+
+  // Barra de navegación del webview (tile.nav). El cambio dispara
+  // tile:updated: el tile monta/desmonta la barra solo (webviewTile.js).
+  function navCell(tile) {
+    const td = h('td', { class: 'py-2 pr-2 whitespace-nowrap' });
+    if (tile.kind !== 'webview') {
+      td.append(h('span', { class: 'text-fg-subtle' }, '—'));
+      return td;
+    }
+    const on = tile.nav === true;
+    td.append(h('button', {
+      class: `text-[10px] px-1.5 py-1 rounded border transition ${on
+        ? 'border-accent text-accent'
+        : 'border-line text-fg-subtle hover:bg-bg-elev'}`,
+      title: on ? 'Ocultar la barra de navegación' : 'Mostrar la barra de navegación',
+      onClick: async () => {
+        await ProfileManager.updateTile(tile.id, { nav: !on });
+        render();
+      },
+    }, on ? 'Sí' : 'No'));
     return td;
   }
 

@@ -112,6 +112,7 @@ function setupMenu(win) {
       label: 'Tile',
       submenu: [
         { label: 'Cerrar tile', accelerator: 'CmdOrCtrl+W', click: send('menu:close-tile') },
+        { label: 'Barra de dirección', accelerator: 'CmdOrCtrl+L', click: sendTile('address-bar') },
         { type: 'separator' },
         { label: 'Ir a archivo…', accelerator: 'CmdOrCtrl+P', click: send('menu:quick-open-file') },
         { label: 'Command Palette', accelerator: 'CmdOrCtrl+Shift+P', click: send('menu:command-palette') },

@@ -8,6 +8,7 @@
 import { ProfileManager } from '../core/profileManager.js';
 import { uid } from '../utils/dom.js';
 import { createWebviewTile, normalizeUrl } from './webviewTile.js';
+import { navDefaultFor } from '../core/browserNav.js';
 import { createCalculatorTile } from './calculator.js';
 import { createTerminalTile } from './terminal.js';
 import { createFileTile } from './fileTile.js';
@@ -55,6 +56,7 @@ export const TileFactory = {
       kind: 'webview',
       url,
       title: domainOf(url),
+      nav: navDefaultFor('manual'),
       colSpan: 16,
       rowSpan: 8,
     });
@@ -110,6 +112,7 @@ export const TileFactory = {
       title: app.name,
       icon: app.icon,
       appId: app.id,
+      nav: navDefaultFor('app'),
       colSpan: 16,
       rowSpan: 8,
     });
