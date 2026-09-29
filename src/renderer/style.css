@@ -430,16 +430,17 @@
   .tile[data-kind='terminal'] {
     transition: box-shadow 0.3s ease, background-color 0.3s ease;
   }
+  /* Trabajando: rojizo. Terminó sin foco: verde. (Abel, 2026-09-29) */
   .tile[data-kind='terminal'].is-working {
-    box-shadow: inset 0 0 0 1px rgb(var(--color-accent-rgb) / 0.45);
-    background: color-mix(in srgb, rgb(var(--color-tile-bg-rgb) / var(--term-tile-opacity, 1)) 94%, white);
+    box-shadow: inset 0 0 0 2px rgb(220 80 70 / 0.7);
+    background: color-mix(in srgb, rgb(var(--color-tile-bg-rgb) / var(--term-tile-opacity, 1)) 86%, #D9534F);
   }
   .tile[data-kind='terminal'].is-working.focused {
-    box-shadow: inset 0 0 0 2px var(--color-accent), inset 0 0 0 4px rgb(var(--color-accent-rgb) / 0.25);
+    box-shadow: inset 0 0 0 2px var(--color-accent), inset 0 0 0 4px rgb(220 80 70 / 0.5);
   }
   .tile[data-kind='terminal'].is-done {
-    box-shadow: inset 0 0 0 2px rgb(168 188 152 / 0.85), 0 0 18px rgb(168 188 152 / 0.35);
-    background: color-mix(in srgb, rgb(var(--color-tile-bg-rgb) / var(--term-tile-opacity, 1)) 92%, #A8BC98);
+    box-shadow: inset 0 0 0 2px rgb(90 190 120 / 0.9), 0 0 18px rgb(90 190 120 / 0.35);
+    background: color-mix(in srgb, rgb(var(--color-tile-bg-rgb) / var(--term-tile-opacity, 1)) 86%, #3DBE72);
   }
   .tile[data-kind='terminal'].is-done.focused {
     box-shadow: inset 0 0 0 2px var(--color-accent);
@@ -453,8 +454,8 @@
     z-index: 11;
     padding: 3px 9px 3px 7px;
     border-radius: 999px;
-    background: #A8BC98;
-    color: #101510;
+    background: #3DBE72;
+    color: #06140B;
     font: 600 10.5px/1.2 "JetBrains Mono", Menlo, monospace;
     letter-spacing: 0.06em;
     text-transform: uppercase;
