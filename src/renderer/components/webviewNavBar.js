@@ -29,7 +29,13 @@ export function createWebviewNavBar(webview, { onHide }) {
     h('div', { class: 'webview-navbar-grip' }), back, fwd, reload, address, hide,
   ]);
 
-  function currentUrl() { try { return webview.getURL() || ''; } catch { return ''; } }
+  // Antes de que el guest se adjunte (o mientras no navegó) getURL() está
+  // vacío o tira: en ese caso mostramos el src con que nació el tile.
+  function currentUrl() {
+    let url = '';
+    try { url = webview.getURL() || ''; } catch { /* noop */ }
+    return url || webview.getAttribute('src') || '';
+  }
   function paint() {
     let canGoBack = false, canGoForward = false;
     try { canGoBack = webview.canGoBack(); canGoForward = webview.canGoForward(); } catch { /* noop */ }
@@ -65,8 +71,7 @@ export function createWebviewNavBar(webview, { onHide }) {
   webview.addEventListener('did-stop-loading', onStop);
   webview.addEventListener('did-navigate', syncAddress);
   webview.addEventListener('did-navigate-in-page', syncAddress);
-  // Antes de que el guest se adjunte, getURL() tira: mostramos el src.
-  address.value = webview.getAttribute('src') || '';
+  syncAddress();
   webview.addEventListener('did-attach', syncAddress, { once: true });
 
   function dispose() {

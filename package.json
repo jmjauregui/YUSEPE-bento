@@ -21,7 +21,7 @@
     "package:mac": "npm run build && electron-builder --mac",
     "package:win": "npm run build && electron-builder --win",
     "package:linux": "npm run build && electron-builder --linux",
-    "e2e": "npm run build && node e2e/smoke.mjs && node e2e/windows.mjs",
+    "e2e": "npm run build && node e2e/smoke.mjs && node e2e/windows.mjs && node e2e/navbar.mjs",
     "vmp-sign": "sh scripts/vmp-sign.sh dist/mac",
     "release:mac": "sh scripts/release-mac.sh"
   },
