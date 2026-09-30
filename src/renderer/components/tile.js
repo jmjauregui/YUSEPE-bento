@@ -2,12 +2,13 @@
  * src/renderer/components/tile.js
  * --------------------------------------------------------------
  * Factoría de tiles. Nuevos tiles incluyen colSpan/rowSpan
- * para el grid manual de 12 columnas.
+ * para el grid manual de 48 columnas.
  * --------------------------------------------------------------
  */
 import { ProfileManager } from '../core/profileManager.js';
 import { uid } from '../utils/dom.js';
 import { createWebviewTile, normalizeUrl } from './webviewTile.js';
+import { navDefaultFor } from '../core/browserNav.js';
 import { createCalculatorTile } from './calculator.js';
 import { createTerminalTile } from './terminal.js';
 import { createFileTile } from './fileTile.js';
@@ -55,13 +56,14 @@ export const TileFactory = {
       kind: 'webview',
       url,
       title: domainOf(url),
-      colSpan: 4,
-      rowSpan: 4,
+      nav: navDefaultFor('manual'),
+      colSpan: 16,
+      rowSpan: 8,
     });
   },
 
   calculator() {
-    return addTile({ kind: 'calculator', colSpan: 4, rowSpan: 4 });
+    return addTile({ kind: 'calculator', colSpan: 16, rowSpan: 8 });
   },
 
   /**
@@ -69,19 +71,19 @@ export const TileFactory = {
    * son .md en `.ybento/tasks/` del proyecto (ver main/tasksOps.js).
    */
   tasks() {
-    return addTile({ kind: 'tasks', title: 'Tareas', colSpan: 3, rowSpan: 5 });
+    return addTile({ kind: 'tasks', title: 'Tareas', colSpan: 12, rowSpan: 10 });
   },
 
   terminal(cwd = null) {
-    return addTile({ kind: 'terminal', colSpan: 6, rowSpan: 4, cwd: cwd || null });
+    return addTile({ kind: 'terminal', colSpan: 24, rowSpan: 8, cwd: cwd || null });
   },
 
   /** Terminal que ejecuta `command` automáticamente al abrirse. */
   terminalPreloaded(command, cwd = null) {
     return addTile({
       kind: 'terminal',
-      colSpan: 6,
-      rowSpan: 4,
+      colSpan: 24,
+      rowSpan: 8,
       cwd: cwd || null,
       command: command || null,
     });
@@ -98,8 +100,8 @@ export const TileFactory = {
       relPath: entry.relPath,
       name: entry.name,
       title: entry.name,
-      colSpan: 4,
-      rowSpan: 5,
+      colSpan: 16,
+      rowSpan: 10,
     });
   },
 
@@ -110,8 +112,9 @@ export const TileFactory = {
       title: app.name,
       icon: app.icon,
       appId: app.id,
-      colSpan: 4,
-      rowSpan: 4,
+      nav: navDefaultFor('app'),
+      colSpan: 16,
+      rowSpan: 8,
     });
   },
 };

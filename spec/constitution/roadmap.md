@@ -2,7 +2,7 @@
 
 ## Hecho ✅
 
-1. **001 · Bento Grid core** — grid de 12 columnas con auto-placement, resize push/pull y drag libre.
+1. **001 · Bento Grid core** — grid de 12 columnas (24 desde 028) con auto-placement, resize push/pull y drag libre.
 2. **002 · Perfiles / Workspaces** — CRUD de perfiles, persistencia JSON atómica, migración de gridVersion.
 3. **003 · Terminal (node-pty + xterm.js)** — terminal real con OSC 52 write, bracketed paste, copy-on-select.
 4. **004 · Webview tiles** — webview por tile con partición aislada, permisos denegados por defecto.
@@ -35,9 +35,24 @@ _(vacío — definir la próxima feature en `tasks.md` raíz antes de crear la c
 24. **025 · fix: Mensajes entre agentes quedan escritos pero sin enviar** — el Enter llegaba dentro de la ventana de pegado del TUI en mensajes de más de 2550 chars: `whenIdle()` en `createWriteQueue` + `Promise.race` en el dispatcher, para que espere al drenaje real (e229f21). Incluye la regresión que introdujo ese mismo fix — `dispose()` dejaba los `whenIdle()` sin resolver y colgaba el reparto entero del workspace — cerrada con `notifyIdle()` en `clear()` y el cinturón `IDLE_TIMEOUT_MS` (9cf2501).
 25. **027 · fix: Instrumentación pasiva B1/B2 para diagnosticar truncamiento** — `loopDiag.js` con ventana de captura acotada a la entrega; `ybento diag @agente` imprime veredicto en texto. El bug de truncamiento sigue abierto; esta entrada cierra la instrumentación (ae6aaac).
 
+26. **028 · Grid de 24 → 48 columnas** — resolución del grid ×2 en ambos ejes (v3: 24 columnas, filas de 35px) y luego columnas ×2 más (v4: 48 columnas, filas iguales) para repartos finos en monitores anchos; `gridVersion: 4` con migración encadenada v1→v2→v3→v4 al cargar (perfiles de versiones más nuevas no se tocan); tamaños por defecto de tiles nuevos ×2. Propuesta P2 de Abel (rama `feature/grid-24-columnas`).
+
+27. **029 · Plantillas de distribución** — tercer paso en "Nuevo workspace": elegir una plantilla (incorporadas: vacío, dos terminales, cuatro columnas, cuatro + panel, terminal + tareas) o una guardada por el usuario desde el administrador ("Guardar distribución como plantilla", en `<userData>/layout-templates.json`). Módulo puro `core/layoutTemplates.js` con validación (grilla, kinds, solapes); `storage.create` acepta tiles iniciales. Propuesta P5 de Abel.
+28. **030 · Catálogo: categoría Comunicación** — Discord, WhatsApp Web, Slack y Telegram Web en "Agregar al espacio". Propuesta P4 de Abel.
+
+29. **031 · Workspaces en ventanas independientes** — botón ↗ en la pestaña, menú contextual "Abrir en ventana nueva" o arrastrar la pestaña fuera de la ventana: el workspace pasa a una `BrowserWindow` propia SIN matar sus terminales (los ptys cambian de dueño en main y la ventana nueva repinta los últimos 256 KB de salida). Un workspace vive en una sola ventana a la vez (reclamos por ventana, toast si otra lo tiene); diálogos y atajos van a la ventana enfocada; al cerrar una ventana se sueltan sus workspaces y se matan sus ptys. `main/multiWindow.js` puro con tests; E2E `e2e/windows.mjs`. Propuesta P1 de Abel.
+
 ## Backlog / ideas 💡
 
 - **Loop: chunking de mensajes largos** — se descartó en sesión 2025-08; el usuario prefiere pasar el mensaje completo sin fragmentar.
 - **Editor de código integrado** — tile tipo editor (Monaco u otro); no es prioridad core.
 - **Exportar/importar workspaces** — ya existe export/import de perfil; mejorar UX del flujo.
 - **Auto-`.gitignore` de `.ybento`** — dejado fuera de alcance a propósito; las tareas se commitean.
+
+## Propuestas de Abel · 2026-09-26 💡
+
+Surgidas de usar Bento con cuatro terminales de Claude (mac + mini) en un monitor ultrawide. Diagnóstico leído en el código de v1.5.3; ninguna está empezada.
+
+- **P7 · Color de actividad en las terminales** — **HECHO 2026-09-29** (rama `feature/terminal-actividad`, spec `docs/superpowers/specs/2026-09-29-terminal-actividad-design.md`). `core/activityState.js` (puro, 9 tests): idle → working con salida útil (tras 3 s de arranque, ≥ 20 bytes o 3 fragmentos chicos en 1 s) → done tras 1,5 s sin salida si el tile no tiene el foco → idle al enfocarlo. CSS `.is-working` (borde cobre tenue + fondo 6 % más claro) y `.is-done` (borde salvia + punto). MEDIDO: Claude Code ocioso emite 7 fragmentos al arrancar y ninguno en 19 s. E2E `e2e/actividad.mjs` 6/6.
+- **P6 · Barra de navegación en los webviews** — **HECHO 2026-09-29** (rama `feature/barra-navegacion`, spec `docs/superpowers/specs/2026-09-29-barra-navegacion-webview-design.md`). Campo `nav` por tile: «URL manual» nace con barra, apps del catálogo sin barra, tiles viejos sin cambio. ‹ › ↻ [dirección] ⌄ encima del `<webview>`; Cmd+L (menú Tile › Barra de dirección) la enciende y enfoca; interruptor en el administrador del workspace; con la barra encendida la última URL queda en el perfil. Siguientes pasos no incluidos: pestañas dentro del tile, historial, abrir en otro tile los enlaces `target=_blank` (hoy `allowpopups=false` los ignora), favoritos.
+- **P3 · DRM (Widevine) en los webviews** — Netflix y similares fallan con M7701-1003 porque Electron estándar no trae el CDM; el permiso `mediaKeySystem` ya está habilitado en `index.js` pero no hay módulo en el bundle. Requiere (1) cambiar `electron` por la distribución de castLabs (`@castlabs/electron-releases`) en `package.json`, (2) firma VMP vía EVS de castLabs (cuenta necesaria) en el pipeline de `electron-builder`, (3) redistribuir. Es cambio de build y distribución, no de código de la app. Alternativa mientras tanto: PiP de Safari/Chrome sobre Bento. **Hecho 2026-09-28** en `feature/widevine-netflix`: Electron de castLabs + firma VMP (`npm run vmp-sign`, cuenta EVS `corpusia`). Gotcha medido el mismo día: el servidor de componentes de Google ya no entrega el CDM a Chromium 130 (Electron 33): `components.whenReady()` falla en 3 s con `not-installed`; con castLabs v41.10.7 y v44.1.0 el CDM se instala en 11 s. Por eso se subió a v44.1.0+wvcus (Chromium 152, node-pty reconstruido con ABI 149). Regla: mantener el Electron de castLabs dentro de las 3 majors soportadas, o Netflix vuelve a caer en instalaciones nuevas.

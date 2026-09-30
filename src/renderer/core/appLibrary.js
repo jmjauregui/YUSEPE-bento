@@ -21,7 +21,7 @@ function faviconFor(url) {
   }
 }
 
-export const CATEGORIES = ['IA', 'Productividad', 'Diseño', 'Desarrollo', 'Utilidades'];
+export const CATEGORIES = ['IA', 'Productividad', 'Comunicación', 'Diseño', 'Desarrollo', 'Utilidades'];
 
 // `badge` reemplaza el favicon por un icono propio: emoji, o texto con
 // colores (fondo `bg` + texto `color`) — ver render en addToSpace.js.
@@ -59,6 +59,16 @@ const APPS = [
     description: 'Buscador web.' },
   { name: 'YouTube', url: 'https://www.youtube.com', category: 'Utilidades',
     description: 'Videos y música en streaming.' },
+  // Comunicación: webapps de chat. Corren bien en el webview (login
+  // persistente por partición); lo que no tienen es notificaciones nativas.
+  { name: 'Discord', url: 'https://discord.com/app', category: 'Comunicación',
+    description: 'Chat por canales, voz y comunidades.' },
+  { name: 'WhatsApp Web', url: 'https://web.whatsapp.com', category: 'Comunicación',
+    description: 'Tus chats de WhatsApp desde el escritorio (vincula el teléfono con QR).' },
+  { name: 'Slack', url: 'https://app.slack.com/client', category: 'Comunicación',
+    description: 'Mensajería de equipos por canales.' },
+  { name: 'Telegram Web', url: 'https://web.telegram.org', category: 'Comunicación',
+    description: 'Cliente web de Telegram.' },
 ];
 
 export const LIBRARY_APPS = APPS.map((app) => ({

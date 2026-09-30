@@ -2,7 +2,7 @@
  * src/renderer/components/bentoGrid.js
  * --------------------------------------------------------------
  * Bento Grid con posiciones manuales:
- *  - Grid de 12 columnas, filas auto (minmax 70px, 1fr).
+ *  - Grid de 48 columnas, filas auto (minmax 35px, 1fr).
  *  - Cada tile tiene col/row/colSpan/rowSpan explícitos.
  *  - Auto-placement para tiles nuevos (busca hueco libre).
  *  - Resize: arrastrar bordes (right, bottom, corner), con push/expand
@@ -19,9 +19,10 @@ import { renderTile } from './tile.js';
 import { ProfileManager } from '../core/profileManager.js';
 import { GRID_COLS, findEmptySpot, resolveColGrowth, resolveRowGrowth, moveTileTo, findNeighbor } from '../core/layout.js';
 import * as liveTiles from '../core/liveTiles.js';
+import { navEnabled } from '../core/browserNav.js';
 
 const GAP = 8;
-const MIN_ROW_PX = 70;
+const MIN_ROW_PX = 35;
 
 const grid = document.getElementById('bento');
 // Zona oculta (pero dentro del documento) donde "aparcamos" tiles vivos
@@ -80,8 +81,8 @@ function ensurePositions(tiles) {
 
   let changed = false;
   for (const tile of unpositioned) {
-    const cs = tile.colSpan || 4;
-    const rs = tile.rowSpan || 4;
+    const cs = tile.colSpan || 16;
+    const rs = tile.rowSpan || 8;
     const pos = findEmptySpot(cs, rs, occupied);
     tile.col = pos.col;
     tile.row = pos.row;
@@ -113,6 +114,9 @@ function focusTile(tileId) {
   document.querySelectorAll('.tile').forEach((el) => {
     el.classList.toggle('focused', el.dataset.tileId === tileId);
   });
+  // Los tiles que muestran «terminó de trabajar» lo limpian al recibir el
+  // foco (ver components/terminal.js · core/activityState.js).
+  bus.emit('tile:focused', { id: tileId });
 }
 
 // Los tiles webview notifican su foco vía bus (ver webviewTile.js),
@@ -624,6 +628,18 @@ export async function renderBento() {
   }
 
   bus.emit('bento:rendered', { count: tiles.length });
+}
+
+/**
+ * Cmd+L (menú Tile › Barra de dirección): sobre un webview enfocado,
+ * enciende su barra de navegación si estaba apagada y pone el cursor en
+ * la dirección, como en un navegador.
+ */
+export async function toggleAddressBar() {
+  const tile = state.profile?.tiles?.find((t) => t.id === focusedTileId);
+  if (!tile || tile.kind !== 'webview') return;
+  if (!navEnabled(tile)) await ProfileManager.updateTile(tile.id, { nav: true });
+  liveTiles.get(tile.id)?.meta?.focusAddress?.();
 }
 
 export async function closeFocusedTile() {

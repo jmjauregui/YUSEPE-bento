@@ -16,11 +16,14 @@
     "format": "prettier --write \"src/**/*.{js,css,html}\"",
     "format:check": "prettier --check \"src/**/*.{js,css,html}\"",
     "rebuild": "electron-rebuild -f -w node-pty",
-    "postinstall": "electron-rebuild -f -w node-pty || echo 'skip rebuild'",
+    "postinstall": "(electron-rebuild -f -w node-pty || echo 'skip rebuild') && (sh scripts/fix-electron-dist.sh || echo 'skip fix-electron-dist')",
     "package": "npm run build && electron-builder",
     "package:mac": "npm run build && electron-builder --mac",
     "package:win": "npm run build && electron-builder --win",
-    "package:linux": "npm run build && electron-builder --linux"
+    "package:linux": "npm run build && electron-builder --linux",
+    "e2e": "npm run build && node e2e/smoke.mjs && node e2e/windows.mjs && node e2e/navbar.mjs && node e2e/actividad.mjs",
+    "vmp-sign": "sh scripts/vmp-sign.sh dist/mac",
+    "release:mac": "sh scripts/release-mac.sh"
   },
   "dependencies": {
     "@xterm/addon-clipboard": "^0.2.0",
@@ -35,13 +38,14 @@
   "devDependencies": {
     "@eslint/js": "^9.39.4",
     "autoprefixer": "^10.4.20",
-    "electron": "^33.0.0",
+    "electron": "github:castlabs/electron-releases#v44.1.0+wvcus",
     "electron-builder": "^24.13.3",
     "electron-rebuild": "^3.2.9",
     "electron-vite": "^2.3.0",
     "eslint": "^9.39.4",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.7.0",
+    "playwright": "^1.63.0",
     "postcss": "^8.4.47",
     "prettier": "^3.9.5",
     "tailwindcss": "^3.4.13",

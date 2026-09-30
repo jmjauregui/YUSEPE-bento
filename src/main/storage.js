@@ -13,21 +13,45 @@ import { promises as fs } from 'fs';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 
-// v1: grid de 6 columnas / filas de 140px. v2: 12 columnas / filas de 70px
-// (el doble de segmentos en ambos ejes, misma resolución física — ver
-// core/layout.js y bentoGrid.js). Los perfiles guardados antes de este
-// cambio no tienen `gridVersion`; se migran una sola vez al cargarlos,
-// escalando col/row/colSpan/rowSpan x2 para que el layout se vea igual.
-const GRID_VERSION = 2;
-const GRID_SCALE_V1_TO_V2 = 2;
+// Historial de resoluciones del grid (ver core/layout.js y bentoGrid.js):
+//   v1: 6 columnas / filas de 140px (perfiles sin `gridVersion`)
+//   v2: 12 columnas / filas de 70px
+//   v3: 24 columnas / filas de 35px
+//   v4: 48 columnas / filas de 35px (solo columnas: filas más finas que
+//       35px ya no aportan y hacen saltar el arrastre vertical)
+// Cada salto multiplica los segmentos con la misma resolución física, así
+// que un perfil migrado se ve idéntico. La migración corre una sola vez al
+// cargar, encadenando las versiones que falten, y se persiste.
+const GRID_VERSION = 4;
+/** Factores de escala (columnas, filas) para pasar de la versión N a la N+1. */
+const GRID_SCALE_FROM = {
+  1: { cols: 2, rows: 2 },
+  2: { cols: 2, rows: 2 },
+  3: { cols: 2, rows: 1 },
+};
+
+function isCurrentOrNewer(profile) {
+  return Number.isInteger(profile.gridVersion) && profile.gridVersion >= GRID_VERSION;
+}
+
+function scaleTiles(tiles, { cols, rows }) {
+  for (const tile of tiles || []) {
+    if (tile.col != null) tile.col = (tile.col - 1) * cols + 1;
+    if (tile.row != null) tile.row = (tile.row - 1) * rows + 1;
+    if (tile.colSpan != null) tile.colSpan = tile.colSpan * cols;
+    if (tile.rowSpan != null) tile.rowSpan = tile.rowSpan * rows;
+  }
+}
 
 function migrateGrid(profile) {
-  if (profile.gridVersion === GRID_VERSION) return profile;
-  for (const tile of profile.tiles || []) {
-    if (tile.col != null) tile.col = (tile.col - 1) * GRID_SCALE_V1_TO_V2 + 1;
-    if (tile.row != null) tile.row = (tile.row - 1) * GRID_SCALE_V1_TO_V2 + 1;
-    if (tile.colSpan != null) tile.colSpan = tile.colSpan * GRID_SCALE_V1_TO_V2;
-    if (tile.rowSpan != null) tile.rowSpan = tile.rowSpan * GRID_SCALE_V1_TO_V2;
+  // Un perfil de una app más nueva no se toca: no sabemos cómo leerlo.
+  if (isCurrentOrNewer(profile)) return profile;
+  let version = Number.isInteger(profile.gridVersion) && profile.gridVersion >= 1
+    ? profile.gridVersion
+    : 1;
+  while (version < GRID_VERSION) {
+    scaleTiles(profile.tiles, GRID_SCALE_FROM[version]);
+    version += 1;
   }
   profile.gridVersion = GRID_VERSION;
   return profile;
@@ -85,15 +109,23 @@ export class ProfileStorage {
     );
   }
 
-  /** Crea un perfil vacío. Valida unicidad de nombre. `cwd` es la carpeta de inicio del workspace. */
-  async create({ name = 'Nuevo perfil', cwd = null } = {}) {
+  /**
+   * Crea un perfil. Valida unicidad de nombre. `cwd` es la carpeta de inicio
+   * del workspace. `tiles` (opcional) son los tiles iniciales de una
+   * plantilla de distribución, ya en coordenadas de la grilla actual; a los
+   * que vengan sin `id` se les asigna uno.
+   */
+  async create({ name = 'Nuevo perfil', cwd = null, tiles = [] } = {}) {
     if (await this.isNameTaken(name)) {
       throw new Error(`Ya existe un perfil llamado "${name}"`);
     }
     await this._ensureDir();
     const id = randomUUID();
     const now = Date.now();
-    const profile = { id, name, cwd: cwd || null, createdAt: now, updatedAt: now, tiles: [], gridVersion: GRID_VERSION };
+    const initialTiles = Array.isArray(tiles)
+      ? tiles.map((t) => ({ ...t, id: t.id || randomUUID() }))
+      : [];
+    const profile = { id, name, cwd: cwd || null, createdAt: now, updatedAt: now, tiles: initialTiles, gridVersion: GRID_VERSION };
     // _writeProfile ya actualiza el índice. NO hacer push adicional.
     await this._writeProfile(profile);
     return profile;
@@ -131,7 +163,7 @@ export class ProfileStorage {
     const path = join(this.baseDir, `${id}.json`);
     const raw = await fs.readFile(path, 'utf8');
     const profile = JSON.parse(raw);
-    if (profile.gridVersion !== GRID_VERSION) {
+    if (!isCurrentOrNewer(profile)) {
       migrateGrid(profile);
       await this._writeProfile(profile); // persistir la migración una sola vez
     }
