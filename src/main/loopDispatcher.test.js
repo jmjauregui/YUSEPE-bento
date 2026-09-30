@@ -361,14 +361,20 @@ describe('ciclo de vida', () => {
     expect(await dispatcher.tick()).toEqual([]);
   });
 
-  it('start con otro workspace mueve la vigilancia', async () => {
+  // Desde 9f6775e (modo «loops simultáneos») `start` NO detiene otros
+  // workspaces: el llamador hace `stop(anterior)` y luego `start(nuevo)`,
+  // y los bindings van por workspace (66f9986). El test anterior asumía el
+  // modo «un loop a la vez» y por eso fallaba desde el merge de #9.
+  it('stop del viejo + start del nuevo mueve la vigilancia', async () => {
     const otro = await fs.mkdtemp(path.join(os.tmpdir(), 'yusepe-dispatch-otro-'));
     try {
       await registerAgent(otro, { name: 'claudio' });
       dispatcher.bind('claudio', 'pty_claudio', cwd);
 
       start();
+      dispatcher.stop(cwd);
       dispatcher.start(otro);
+      dispatcher.bind('claudio', 'pty_claudio', otro);
 
       await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'del viejo' });
       expect(await dispatcher.tick()).toEqual([]);
