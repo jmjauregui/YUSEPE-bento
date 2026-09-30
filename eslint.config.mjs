@@ -66,5 +66,15 @@ export default [
     },
   },
 
+  // E2E (Playwright sobre la app real): el script corre en Node, pero los
+  // callbacks de `page.evaluate` / `waitForFunction` corren dentro del
+  // renderer, así que necesitan los dos entornos.
+  {
+    files: ['e2e/**/*.mjs'],
+    languageOptions: {
+      globals: { ...globals.node, ...globals.browser },
+    },
+  },
+
   prettier,
 ];
