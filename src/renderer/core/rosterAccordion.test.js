@@ -190,24 +190,37 @@ describe('rowFlags', () => {
   });
 });
 
+// Cambio de contrato aprobado por el usuario (2026-10-01, tarea 037 v2):
+// rosterAlert devuelve { count, down, stuck, kind } en vez de 'red'|'amber'.
+// El rojo queda reservado para "ocupado" en los puntos por agente; el botón
+// del acordeón usa un solo color (ámbar). No es un test debilitado:
+// la invariante 5 se mantiene — el botón siempre refleja el estado real.
 describe('rosterAlert', () => {
-  it('uno ausente y otro trabado → red (rojo le gana al ámbar)', () => {
+  it('un caído y un trabado → kind both, count 2', () => {
     const a1 = { ...mkAgent('waiting', NOW), name: 'alpha' };
     const a2 = { ...mkAgent('working', NOW - STUCK_WORKING_MS - 1), name: 'beta' };
     const pb = { alpha: { present: false }, beta: { present: true } };
-    expect(rosterAlert([a1, a2], pb, NOW)).toBe('red');
+    const r = rosterAlert([a1, a2], pb, NOW);
+    expect(r).not.toBeNull();
+    expect(r.kind).toBe('both');
+    expect(r.count).toBe(2);
   });
 
-  it('[trabado, ausente] → red — el orden de la lista no importa', () => {
+  it('[trabado, ausente] → kind both — el orden de la lista no importa', () => {
     const a1 = { ...mkAgent('working', NOW - STUCK_WORKING_MS - 1), name: 'alpha' };
     const a2 = { ...mkAgent('waiting', NOW), name: 'beta' };
     const pb = { alpha: { present: true }, beta: { present: false } };
-    expect(rosterAlert([a1, a2], pb, NOW)).toBe('red');
+    const r = rosterAlert([a1, a2], pb, NOW);
+    expect(r).not.toBeNull();
+    expect(r.kind).toBe('both');
   });
 
-  it('sólo trabado → amber', () => {
+  it('sólo trabado → kind stuck', () => {
     const a = { ...mkAgent('working', NOW - STUCK_WORKING_MS - 1), name: 'alpha' };
-    expect(rosterAlert([a], { alpha: { present: true } }, NOW)).toBe('amber');
+    const r = rosterAlert([a], { alpha: { present: true } }, NOW);
+    expect(r).not.toBeNull();
+    expect(r.kind).toBe('stuck');
+    expect(r.count).toBe(1);
   });
 
   it('ningún problema → null', () => {
@@ -217,6 +230,17 @@ describe('rosterAlert', () => {
 
   it('lista vacía → null', () => {
     expect(rosterAlert([], {}, NOW)).toBe(null);
+  });
+
+  it('un agente ausente Y trabado → count 1, no 2 (sin doble conteo)', () => {
+    // El caso más probable: proceso muerto a mitad de tarea → sin presencia + etiqueta working vieja
+    const a = { ...mkAgent('working', NOW - STUCK_WORKING_MS - 1), name: 'solo' };
+    const r = rosterAlert([a], { solo: { present: false } }, NOW);
+    expect(r).not.toBeNull();
+    expect(r.count).toBe(1);
+    expect(r.down).toBe(1);
+    expect(r.stuck).toBe(0);
+    expect(r.kind).toBe('down');
   });
 });
 

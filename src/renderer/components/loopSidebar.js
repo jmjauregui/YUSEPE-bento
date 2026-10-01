@@ -27,7 +27,7 @@ import { svgIcon } from '../utils/icons.js';
 import { state } from '../core/state.js';
 import { bus } from '../core/eventBus.js';
 import { applyAgentOrder, pressOutcome, insertionIndex, trackPress, crossingMoves, shouldReorder, HOLD_MS, SLOP_PX } from '../core/agentOrder.js';
-import { isAbsent, isStuck, rowFlags, rosterAlert, createRosterAccordion, observerOptionsSignature } from '../core/rosterAccordion.js';
+import { isAbsent, rowFlags, rosterAlert, createRosterAccordion, observerOptionsSignature } from '../core/rosterAccordion.js';
 import { createOrderLoader } from '../core/orderLoader.js';
 import { openModal, closeModal, confirmModal } from './modal.js';
 import { ProfileManager } from '../core/profileManager.js';
@@ -39,6 +39,9 @@ import { toast } from './toast.js';
 import { notifyUserMessage } from '../core/loopNotify.js';
 import { createCopyFeedback } from '../core/copyFeedback.js';
 import { pushObserverThreshold } from '../core/observerSettings.js';
+import { activityState } from '../core/loopActivity.js';
+import { agentDotState } from '../core/agentDot.js';
+import { matchMessages, highlightSegments, initialNavIndex, moveNavIndex, navLabel } from '../core/loopSearch.js';
 
 const WIDTH_OPTS = {
   storageKey: 'yusepe:loop-width',
@@ -145,6 +148,25 @@ let observerSelectEl = null;     // <select> que nunca se destruye
 let observerSig = null;          // última firma con la que se dibujaron las opciones
 let pendingObserverUpdate = null; // { sig, agents } esperando a que el select pierda el foco
 
+/* Estado y nodos del buscador en el hilo (039) */
+let searchState = null;  // null | { query, all, results, activeIndex }
+let searchBarEl = null;
+let searchInputEl = null;
+let searchCountEl = null;
+let searchLupaBtn = null;
+let navPrevBtn = null;   // ‹ hacia el más nuevo
+let navNextBtn = null;   // › hacia el más viejo
+// Forzar scroll al fondo en el próximo renderStream, incluso si atBottom era false.
+// Se prende cuando la búsqueda se cierra (con panel visible u oculto).
+let forceBottomNextRender = false;
+
+/* Indicador de actividad por agente (037 v2) */
+let currentPresence = {};
+const streaks = new Map();       // streakStartedAt por nombre: se limpia al cambiar de workspace
+let blinkOn = false;             // fase global del titileo
+let blinkTimer = null;           // único setInterval para todos los puntos
+const blinkingDots = new Set();  // nodos <span> que están titilando ahora
+
 /* Orden de las pills guardado por el usuario.
  * Se carga al entrar al workspace (una sola lectura de disco, no en cada poll). */
 let agentOrder = { cwd: null, names: [] };
@@ -219,6 +241,16 @@ export function initLoopSidebar() {
   applySavedWidth(panelEl, WIDTH_OPTS);
   buildChrome();
 
+  // Ctrl+F: abrir buscador del loop salvo que el foco esté en una terminal.
+  document.addEventListener('keydown', (e) => {
+    if (e.key.toLowerCase() !== 'f' || !e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) return;
+    if (document.activeElement?.closest('[data-kind="terminal"]')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (!isOpen) openSidebar();
+    openSearch();
+  }, true);
+
   // Escape y pérdida de foco terminan cualquier arrastre activo.
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && (dragState || pressState)) { e.preventDefault(); endDrag(false); }
@@ -237,6 +269,14 @@ export function initLoopSidebar() {
     lastNotifiedAt = Date.now();
     // Cargar el orden guardado para este workspace (una lectura de disco).
     loadOrder();
+    // Cerrar búsqueda al cambiar workspace: la consulta no tiene sentido en otro hilo.
+    searchState = null;
+    if (searchBarEl) searchBarEl.classList.add('hidden');
+    if (searchInputEl) searchInputEl.value = '';
+    // Resetear rachas y reloj: el nuevo workspace arranca con estado limpio.
+    currentPresence = {};
+    streaks.clear();
+    stopBlinkClock();
     // Resetear el designado; se carga async al entrar al workspace.
     observerAgent = null;
     if (cwd()) {
@@ -256,6 +296,8 @@ export function initLoopSidebar() {
     if (dragState || pressState) endDrag(false);
     // Guardar el estado actual antes de salir, para restaurarlo al volver.
     persistOpenState(state.profile?.id, isOpen);
+    // Parar el reloj: los puntos del workspace que dejamos no titilan en background.
+    stopBlinkClock();
     // En modo "un loop a la vez", detener el dispatcher de este workspace.
     // En modo "loops simultáneos", dejarlo corriendo para que los agentes
     // de este workspace sigan recibiendo mensajes aunque no estemos acá.
@@ -332,6 +374,17 @@ function closeSidebar() {
   isOpen = false;
   persistOpenState(state.profile?.id, false);
   panelEl.classList.add('hidden');
+  // Cerrar búsqueda: el panel estuvo cerrado y no tiene sentido dejarla abierta.
+  if (searchState) {
+    searchState = null;
+    renderedIds = [];
+    renderedSig = null;
+    forceBottomNextRender = true;
+  }
+  if (searchBarEl) searchBarEl.classList.add('hidden');
+  if (searchInputEl) searchInputEl.value = '';
+  // Parar el reloj del titileo: nada titila con el panel cerrado.
+  stopBlinkClock();
 }
 
 /* ---------- Estructura ---------- */
@@ -343,6 +396,10 @@ function buildChrome() {
   composerInput = null; composerSendBtn = null; composerNoAgentsEl = null;
   renderedIds = []; renderedSig = null;
   rosterListEl = null; observerSelectEl = null; observerSig = null; pendingObserverUpdate = null;
+  searchState = null; searchBarEl = null; searchInputEl = null; searchCountEl = null; searchLupaBtn = null; navPrevBtn = null; navNextBtn = null; forceBottomNextRender = false;
+  currentPresence = {};
+  streaks.clear();
+  stopBlinkClock();
 
   const title = h('div', { class: 'text-xs text-fg-soft flex-1 flex items-center gap-1.5' }, [
     h('span', { class: 'text-accent-soft flex items-center' }, svgIcon('loop', { size: 14 })),
@@ -356,7 +413,13 @@ function buildChrome() {
     onClick: () => accordion?.toggle(),
   }, svgIcon('agents', { size: 14 }));
 
-  const header = h('div', { class: 'flex items-center gap-1.5 px-2 py-1.5 border-b border-line shrink-0' }, [
+  searchLupaBtn = h('button', {
+    class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg px-1 shrink-0',
+    title: 'Buscar en el hilo (Ctrl+F)',
+    onClick: openSearch,
+  }, svgIcon('search', { size: 14 }));
+
+  const iconRow = h('div', { class: 'flex items-center gap-1.5 px-2 py-1.5' }, [
     title,
     rosterBtnEl,
     h('button', {
@@ -364,12 +427,54 @@ function buildChrome() {
       title: 'Protocolo que leen los agentes (.ybento/loop/skill.md)',
       onClick: openSkillEditor,
     }, svgIcon('file', { size: 14 })),
+    searchLupaBtn,
     h('button', {
       class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg px-1 shrink-0',
       title: 'Cerrar loop',
       onClick: closeSidebar,
     }, svgIcon('close', { size: 15 })),
   ]);
+
+  searchInputEl = h('input', {
+    type: 'text',
+    placeholder: 'Buscar en el hilo…',
+    class: 'flex-1 min-w-0 text-xs bg-transparent outline-none text-fg placeholder:text-fg-subtle',
+  });
+  searchCountEl = h('span', { class: 'text-[10px] text-fg-subtle shrink-0 tabular-nums' });
+  navPrevBtn = h('button', {
+    class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg disabled:opacity-30 disabled:cursor-not-allowed px-0.5 shrink-0',
+    title: 'Resultado anterior (Shift+Enter)',
+    onClick: () => moveNav('prev'),
+  }, '‹');
+  navNextBtn = h('button', {
+    class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg disabled:opacity-30 disabled:cursor-not-allowed px-0.5 shrink-0',
+    title: 'Resultado siguiente (Enter)',
+    onClick: () => moveNav('next'),
+  }, '›');
+  navPrevBtn.disabled = true;
+  navNextBtn.disabled = true;
+  searchBarEl = h('div', { class: 'hidden flex items-center gap-1.5 px-2 pb-1.5' });
+  searchBarEl.append(
+    searchInputEl,
+    navPrevBtn,
+    searchCountEl,
+    navNextBtn,
+    h('button', {
+      class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg px-1 shrink-0',
+      title: 'Cerrar búsqueda (Esc)',
+      onClick: closeSearch,
+    }, svgIcon('close', { size: 12 })),
+  );
+  searchInputEl.addEventListener('input', onSearchInput);
+  searchInputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { closeSearch(); return; }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      e.shiftKey ? moveNav('prev') : moveNav('next');
+    }
+  });
+
+  const header = h('div', { class: 'border-b border-line shrink-0' }, [iconRow, searchBarEl]);
 
   rosterEl = h('div', {
     id: 'loop-roster',
@@ -426,6 +531,7 @@ function buildChrome() {
 
   streamEl = h('div', { class: 'flex-1 overflow-y-auto px-2 py-2 space-y-2' });
   emptyEl = h('div', { class: 'hidden px-3 py-6 text-center text-[11px] text-fg-subtle leading-relaxed' });
+
   composerEl = h('div', { class: 'shrink-0 border-t border-line p-2' });
 
   panelEl.append(
@@ -444,7 +550,8 @@ async function refresh() {
       window.yusepe.loop.presence(cwd()),
     ]);
     const ordered = applyAgentOrder(agents, orderFor(cwd()));
-    renderRoster(ordered, presence || {});
+    currentPresence = presence || {};
+    renderRoster(ordered, currentPresence);
     renderStream(messages, ordered);
     renderComposer(ordered);
   } catch (err) {
@@ -456,31 +563,173 @@ async function refresh() {
   }
 }
 
-/* ---------- Roster de terminales ---------- */
+/* ---------- Reloj de titileo compartido (037 v2) ---------- */
+
+function stopBlinkClock() {
+  if (blinkTimer) { clearInterval(blinkTimer); blinkTimer = null; }
+  blinkingDots.clear();
+}
+
+function startBlinkClock() {
+  if (blinkTimer) return;
+  blinkTimer = setInterval(() => {
+    blinkOn = !blinkOn;
+    for (const el of blinkingDots) {
+      if (!el.isConnected) { blinkingDots.delete(el); continue; }
+      el.style.opacity = blinkOn ? '1' : '0.2';
+    }
+    if (blinkingDots.size === 0) stopBlinkClock();
+  }, 500);
+}
 
 /**
- * Verde = libre, ámbar = ocupado, rojo = su terminal volvió al prompt.
- *
- * El rojo es el caso que más importa: significa que el proceso del agente
- * terminó, así que no se le entrega nada y sus mensajes quedan pendientes.
- * Sin este aviso, el loop se ve normal mientras nadie contesta.
+ * Crea el <span> del punto de estado para un agente.
+ * Los puntos con blink: true se registran en blinkingDots y arrancan el reloj.
  */
-function stateDot(agent, presence) {
-  if (presence && presence.present === false) {
-    return h('span', {
-      class: 'w-1.5 h-1.5 rounded-full shrink-0 bg-red-400',
-      title: `Su terminal volvió al prompt (${presence.foreground}): el agente ya no está corriendo. `
-        + 'Los mensajes le quedan pendientes hasta que lo vuelvas a levantar.',
-    });
+function makeAgentDot(dotState) {
+  const bgColor = {
+    green: 'bg-emerald-400',
+    red:   'bg-red-400',
+    amber: 'bg-amber-400',
+    gray:  'bg-slate-400/50',
+  }[dotState.color] ?? 'bg-slate-400/50';
+
+  const el = h('span', {
+    class: `w-1.5 h-1.5 rounded-full shrink-0 ${bgColor}`,
+    title: dotState.label,
+    'aria-label': dotState.label,
+  });
+
+  if (dotState.blink) {
+    el.style.opacity = blinkOn ? '1' : '0.2';
+    blinkingDots.add(el);
+    startBlinkClock();
   }
-  const working = agent.state === 'working';
-  return h('span', {
-    class: `w-1.5 h-1.5 rounded-full shrink-0 ${working ? 'bg-amber-400' : 'bg-emerald-400'}`,
-    title: working
-      ? 'Ocupado: los mensajes le quedan en la bandeja hasta que se libere'
-      : 'Libre: recibe mensajes en su terminal',
+  return el;
+}
+
+/* ---------- Buscador en el hilo (039) ---------- */
+
+function openSearch() {
+  if (!searchBarEl) return;
+  searchBarEl.classList.remove('hidden');
+  searchInputEl?.focus();
+  if (searchState) return;
+  // Mostrar "buscando…" mientras se carga el hilo completo.
+  if (searchCountEl) searchCountEl.textContent = 'buscando…';
+  const c = cwd();
+  if (!c) return;
+  window.yusepe.loop.messages(c, { limit: 0 }).then((all) => {
+    // Tomar lo que haya tipeado el usuario mientras llegaba el hilo.
+    const query = searchInputEl?.value ?? '';
+    searchState = { query, all, results: matchMessages(all, query) };
+    renderSearchResults();
+  }).catch(() => {
+    if (searchCountEl) searchCountEl.textContent = '';
   });
 }
+
+function closeSearch() {
+  searchState = null;
+  if (searchBarEl) searchBarEl.classList.add('hidden');
+  if (searchInputEl) searchInputEl.value = '';
+  if (searchCountEl) searchCountEl.textContent = '';
+  // Reset del render incremental: al volver al hilo normal, la 023 reconstruye.
+  renderedIds = [];
+  renderedSig = null;
+  forceBottomNextRender = true;
+  refresh();
+}
+
+function onSearchInput() {
+  if (!searchState || !searchInputEl) return;
+  const query = searchInputEl.value;
+  if (query === searchState.query) return;
+  searchState = { ...searchState, query, results: matchMessages(searchState.all, query) };
+  renderSearchResults();
+}
+
+function renderSearchResults() {
+  if (!searchState || !streamEl) return;
+  const { query, results } = searchState;
+  const colors = Object.fromEntries((currentAgents || []).map((a) => [a.name, colorOf(a)]));
+
+  streamEl.innerHTML = '';
+  renderedIds = [];
+  renderedSig = null;
+
+  if (!results.length) {
+    searchState.activeIndex = -1;
+    updateNavButtons();
+    emptyEl.classList.remove('hidden');
+    emptyEl.textContent = query
+      ? `Sin resultados para "${query}".`
+      : 'Sin mensajes todavía.';
+    if (searchCountEl) searchCountEl.textContent = query ? '0 resultados' : '';
+    return;
+  }
+
+  emptyEl.classList.add('hidden');
+  for (const msg of results) {
+    // Los mensajes largos que coinciden se muestran desplegados.
+    if ((msg.text?.length ?? 0) > LONG_MESSAGE_CHARS && !expanded.has(msg.id)) {
+      expanded.add(msg.id);
+    }
+    streamEl.append(messageRow(msg, colors, query));
+  }
+
+  // Índice activo: el más reciente (abajo). El contador muestra la posición.
+  const activeIndex = initialNavIndex(results);
+  searchState.activeIndex = activeIndex;
+  updateNavButtons();
+  if (searchCountEl) {
+    searchCountEl.textContent = query ? navLabel(activeIndex, results.length) : '';
+  }
+  // Aplicar anillo al activo y hacer scroll hasta él.
+  queueMicrotask(() => applyNavActive(-1, activeIndex, results.length));
+}
+
+function updateNavButtons() {
+  if (!navPrevBtn || !navNextBtn) return;
+  const { activeIndex = -1, results = [] } = searchState ?? {};
+  const len = results.length;
+  // La función pura es la única fuente de la regla: si mover no cambia el índice, el extremo fue alcanzado.
+  navPrevBtn.disabled = moveNavIndex(activeIndex, len, 'prev') === activeIndex;
+  navNextBtn.disabled = moveNavIndex(activeIndex, len, 'next') === activeIndex;
+}
+
+/**
+ * Toca SÓLO dos burbujas: quita el anillo del índice viejo y lo pone en el nuevo.
+ * Pasa `oldIndex = -1` para saltar la limpieza (por ejemplo al init).
+ */
+function applyNavActive(oldIndex, newIndex, len) {
+  if (!streamEl) return;
+  if (oldIndex >= 0 && oldIndex < len) {
+    const oldRow = streamEl.children[oldIndex];
+    if (oldRow) oldRow.querySelector('.group')?.style.setProperty('outline', '');
+  }
+  if (newIndex >= 0 && newIndex < len) {
+    const newRow = streamEl.children[newIndex];
+    if (newRow) {
+      const bubble = newRow.querySelector('.group');
+      if (bubble) bubble.style.setProperty('outline', '2px solid var(--color-accent)');
+      newRow.scrollIntoView({ block: 'center' });
+    }
+  }
+}
+
+function moveNav(dir) {
+  if (!searchState || searchState.results.length === 0) return;
+  const { activeIndex, results } = searchState;
+  const newIndex = moveNavIndex(activeIndex, results.length, dir);
+  if (newIndex === activeIndex) return; // en el extremo, ya está clavado
+  applyNavActive(activeIndex, newIndex, results.length);
+  searchState.activeIndex = newIndex;
+  updateNavButtons();
+  if (searchCountEl) searchCountEl.textContent = navLabel(newIndex, results.length);
+}
+
+/* ---------- Roster de terminales ---------- */
 
 /** Hace cuánto que no cambia de estado, en texto corto. */
 function sinceLabel(iso, now) {
@@ -492,16 +741,31 @@ function sinceLabel(iso, now) {
   return `hace ${Math.floor(min / 60)} h`;
 }
 
-/** Pinta o borra el punto de alerta en el botón del acordeón. */
+/**
+ * Pinta o borra el punto de alerta en el botón del acordeón.
+ * Un solo color (ámbar): el rojo está reservado para "ocupado" en los puntos
+ * por agente. El texto dice qué pasa y a cuántos agentes afecta.
+ */
 function applyAlertDot(alert, rosterOpen) {
   if (!rosterBtnEl) return;
   const existing = rosterBtnEl.querySelector('[data-alert-dot]');
   if (existing) existing.remove();
   if (!alert || rosterOpen) return;
-  const colorClass = alert === 'red' ? 'bg-red-400' : 'bg-amber-400';
+
+  let tip;
+  if (alert.kind === 'both') {
+    tip = `${alert.down} ${alert.down === 1 ? 'agente caído' : 'agentes caídos'} y `
+        + `${alert.stuck} ${alert.stuck === 1 ? 'trabado' : 'trabados'}`;
+  } else if (alert.kind === 'down') {
+    tip = `${alert.count} ${alert.count === 1 ? 'agente caído' : 'agentes caídos'}`;
+  } else {
+    tip = `${alert.count} ${alert.count === 1 ? 'agente trabado' : 'agentes trabados'}`;
+  }
+
   const dot = h('span', {
     'data-alert-dot': '',
-    class: `absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full ${colorClass}`,
+    class: 'absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-amber-400',
+    title: tip,
   });
   rosterBtnEl.style.position = 'relative';
   rosterBtnEl.append(dot);
@@ -546,7 +810,16 @@ function renderRoster(agents, presence = {}) {
       'Ninguna terminal está en el loop todavía.'));
   }
 
-  for (const agent of agents) rosterListEl.append(agentRow(agent, presence[agent.name], now));
+  for (const agent of agents) {
+    const pres = presence[agent.name];
+    const actResult = activityState({
+      now,
+      lastDataAtByAgent: { [agent.name]: pres?.lastDataAt },
+      streakStartedAt: streaks.get(agent.name) ?? null,
+    });
+    streaks.set(agent.name, actResult.streakStartedAt);
+    rosterListEl.append(agentRow(agent, pres, now, actResult));
+  }
 
   rosterListEl.append(h('button', {
     class: 'w-full mt-1 text-[11px] px-2 py-1.5 rounded-md border border-line hover:bg-bg-elev transition text-fg-muted',
@@ -563,12 +836,14 @@ function renderRoster(agents, presence = {}) {
     lastRosterAlert = alert;
 
     let label = 'Agentes del loop';
-    if (alert === 'red') {
-      const count = agents.filter((a) => isAbsent(presence[a.name])).length;
-      label += ` — ${count} ${count === 1 ? 'agente no recibe' : 'agentes no reciben'}`;
-    } else if (alert === 'amber') {
-      const count = agents.filter((a) => isStuck(a, now)).length;
-      label += ` — ${count} ${count === 1 ? 'agente trabado' : 'agentes trabados'}`;
+    if (alert) {
+      if (alert.kind === 'both') {
+        label += ` — ${alert.down} ${alert.down === 1 ? 'caído' : 'caídos'} y ${alert.stuck} trabado${alert.stuck !== 1 ? 's' : ''}`;
+      } else if (alert.kind === 'down') {
+        label += ` — ${alert.count} ${alert.count === 1 ? 'agente caído' : 'agentes caídos'}`;
+      } else {
+        label += ` — ${alert.count} ${alert.count === 1 ? 'agente trabado' : 'agentes trabados'}`;
+      }
     }
     // Sólo reescribir si cambió — evita pelea con tooltip.js, que roba el
     // `title` en el hover y no lo devuelve hasta que el puntero salga.
@@ -580,9 +855,16 @@ function renderRoster(agents, presence = {}) {
   }
 }
 
-function agentRow(agent, presence, now) {
+function agentRow(agent, presence, now, actResult) {
   const tile = (state.profile?.tiles || []).find((t) => t.id === agent.tileId);
   const { subtitle: problem, showRelease: stuck } = rowFlags(agent, presence, now);
+  const stuckMs = now - new Date(agent.updatedAt).getTime();
+  const dotState = agentDotState({
+    activity: actResult ?? { state: 'idle', streakStartedAt: null, sinceMs: 0 },
+    absent: isAbsent(presence),
+    working: agent.state === 'working',
+    stuckMs,
+  });
 
   // Segunda línea: normalmente el rol, pero si algo anda mal eso pasa a ser
   // lo importante — un rol prolijo no sirve de nada si el agente está caído.
@@ -614,7 +896,7 @@ function agentRow(agent, presence, now) {
     ].filter(Boolean).join('\n\n'),
     onClick: () => { if (tile) focusTileById(tile.id); },
   }, [
-    stateDot(agent, presence),
+    makeAgentDot(dotState),
     h('div', { class: 'flex-1 min-w-0' }, [
       h('div', {
         class: 'text-xs truncate font-medium flex items-center gap-0.5',
@@ -672,8 +954,16 @@ function rebuildStream(messages, colors) {
 }
 
 function renderStream(messages, agents) {
+  // En modo búsqueda el hilo está congelado: no tocarlo hasta cerrar.
+  if (searchState) return;
+
+  // Consumir la bandera de una sola vez: fuerza scroll al fondo sí o sí,
+  // sin depender de atBottom (funciona incluso con el panel recién revelado).
+  const forceBottom = forceBottomNextRender;
+  if (forceBottom) forceBottomNextRender = false;
+
   // Calcular ANTES de tocar el DOM: innerHTML='' recorta scrollTop a 0.
-  const atBottom = streamEl.scrollHeight - streamEl.scrollTop - streamEl.clientHeight < 40;
+  const atBottom = forceBottom || (streamEl.scrollHeight - streamEl.scrollTop - streamEl.clientHeight < 40);
 
   if (!messages.length) {
     // Vacío explícito: sin esto los nodos persistentes quedan como fantasmas.
@@ -761,7 +1051,7 @@ function renderStream(messages, agents) {
   if (atBottom) queueMicrotask(() => { streamEl.scrollTop = streamEl.scrollHeight; });
 }
 
-function messageRow(msg, colors = {}) {
+function messageRow(msg, colors = {}, query = '') {
   const mine = msg.from === 'usuario';
   const forMe = msg.to === 'usuario';
 
@@ -769,7 +1059,12 @@ function messageRow(msg, colors = {}) {
     ? `vos → @${msg.to}`
     : (forMe ? `@${msg.from} → vos` : `@${msg.from} → @${msg.to}`);
 
-  const body = h('div', { class: 'text-xs text-fg whitespace-pre-wrap break-words select-text cursor-text' }, msg.text);
+  const bodyContent = query
+    ? highlightSegments(msg.text ?? '', query).map((seg) =>
+        seg.match ? h('mark', { class: 'bg-yellow-300/40 text-inherit rounded-sm' }, seg.text) : seg.text,
+      )
+    : (msg.text ?? '');
+  const body = h('div', { class: 'text-xs text-fg whitespace-pre-wrap break-words select-text cursor-text' }, bodyContent);
 
   // El nombre del emisor va en su color; el resto del encabezado queda
   // apagado. Así el color aparece dos veces (borde y nombre) y se aprende
@@ -1010,7 +1305,7 @@ async function endDrag(commit) {
 
   if (commit && pillsContainerEl && cwd()) {
     const domNames = Array.from(pillsContainerEl.children)
-      .map((el) => el.textContent.trim().replace(/^@/, ''));
+      .map((el) => el.dataset.agent);
 
     // applyAgentOrder garantiza que agentes llegados durante el drag queden
     // al final y que agentes que se fueron no aparezcan.
@@ -1063,11 +1358,31 @@ function renderPills(agents) {
 
   if (!pillsContainerEl) return;
 
+  // Lee streaks.get() pero NO escribe: renderRoster() escribe la racha en cada vuelta y
+  // siempre corre antes (ver refresh()). Si algún día se saltea renderRoster con el roster
+  // cerrado, los puntos leerían null y titilarian para siempre — en ese caso extraer un
+  // helper computeStreak(agent, pres, now) que lea y escriba, y usarlo en ambos sitios.
   pillsContainerEl.innerHTML = '';
+  const now = Date.now();
   for (const agent of agents) {
+    const pres = currentPresence[agent.name];
+    const actResult = activityState({
+      now,
+      lastDataAtByAgent: { [agent.name]: pres?.lastDataAt },
+      streakStartedAt: streaks.get(agent.name) ?? null,
+    });
+    const stuckMs = now - new Date(agent.updatedAt).getTime();
+    const dotState = agentDotState({
+      activity: actResult,
+      absent: isAbsent(pres),
+      working: agent.state === 'working',
+      stuckMs,
+    });
+    const dot = makeAgentDot(dotState);
+
     const pill = h('button', {
       class: [
-        'text-[10px] px-1.5 py-0.5 rounded-full border transition select-none',
+        'inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full border transition select-none',
         agent.name === target
           ? 'bg-accent/20 border-accent/40 text-fg'
           : 'border-line hover:bg-bg-elev',
@@ -1076,7 +1391,10 @@ function renderPills(agents) {
         ? null
         : `color: color-mix(in srgb, ${colorOf(agent)} 75%, var(--color-fg))`,
       title: clampRole(agent.role) || `Escribirle a @${agent.name}`,
-    }, `@${agent.name}`);
+      'aria-label': `@${agent.name} — ${dotState.label}`,
+    });
+    pill.dataset.agent = agent.name;
+    pill.append(dot, `@${agent.name}`);
 
     attachPillGesture(pill, agent);
     pillsContainerEl.append(pill);

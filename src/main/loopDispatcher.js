@@ -223,10 +223,24 @@ export function createDispatcher({
    * @param {string} [targetCwd]  si se omite, fusiona todos los workspaces
    */
   function presenceSnapshot(targetCwd) {
-    if (targetCwd) return Object.fromEntries(presenceFor(targetCwd));
+    if (targetCwd) {
+      const bindings = bindingsFor(targetCwd);
+      const result = {};
+      for (const [name, info] of presenceFor(targetCwd)) {
+        const ptyId = bindings.get(name);
+        const lda = ptyId ? lastDataAt(ptyId) : null;
+        result[name] = lda != null ? { ...info, lastDataAt: lda } : { ...info };
+      }
+      return result;
+    }
     const merged = {};
-    for (const p of allPresence.values()) {
-      for (const [k, v] of p) merged[k] = v;
+    for (const [cwd, p] of allPresence.entries()) {
+      const bindings = allBindings.get(cwd) ?? new Map();
+      for (const [k, v] of p) {
+        const ptyId = bindings.get(k);
+        const lda = ptyId ? lastDataAt(ptyId) : null;
+        merged[k] = lda != null ? { ...v, lastDataAt: lda } : { ...v };
+      }
     }
     return merged;
   }

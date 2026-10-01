@@ -55,17 +55,28 @@ export function rowFlags(agent, presence, now) {
 }
 
 /**
- * `'red'` si algún agente está ausente; si no, `'amber'` si alguno está
- * trabado; si no, `null`. Rojo le gana al ámbar.
+ * Un nivel único de alerta con detalle: cuántos caídos y/o trabados hay.
+ * Devuelve `null` si no hay nada que reportar.
+ * Cambio de contrato aprobado por el usuario (2026-10-01, tarea 037 v2):
+ * el rojo queda reservado para "ocupado" en los puntos por agente; el botón
+ * del acordeón usa un solo color (ámbar) para "mirá el roster".
+ *
+ * @returns {null | { count: number, down: number, stuck: number, kind: 'down'|'stuck'|'both' }}
  */
 export function rosterAlert(agents, presenceByName, now) {
-  let amber = false;
+  let downCount = 0;
+  let stuckCount = 0;
   for (const agent of agents) {
     const p = presenceByName?.[agent.name];
-    if (isAbsent(p)) return 'red';
-    if (isStuck(agent, now)) amber = true;
+    if (isAbsent(p)) { downCount++; continue; }
+    if (isStuck(agent, now)) stuckCount++;
   }
-  return amber ? 'amber' : null;
+  const total = downCount + stuckCount;
+  if (total === 0) return null;
+  const kind = (downCount > 0 && stuckCount > 0) ? 'both'
+    : downCount > 0 ? 'down'
+    : 'stuck';
+  return { count: total, down: downCount, stuck: stuckCount, kind };
 }
 
 /**
