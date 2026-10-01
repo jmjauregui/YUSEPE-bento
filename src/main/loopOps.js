@@ -359,6 +359,21 @@ export async function listMessages(cwd, { to = null, limit = 0 } = {}) {
 }
 
 /**
+ * Un mensaje por referencia: `42`, `#42` o su id. `null` si no existe.
+ *
+ * Es lo que resuelve el aviso que pega el repartidor (`ybento leer 42`).
+ * El `seq` sale de la posición en un archivo append-only, así que entre el
+ * pegado y la lectura no se corre: sólo se agregan líneas al final.
+ */
+export async function findMessage(cwd, ref) {
+  const key = String(ref ?? '').trim().replace(/^#/, '');
+  if (!key) return null;
+  const all = await listMessages(cwd);
+  if (/^\d+$/.test(key)) return all[Number(key) - 1] || null;
+  return all.find((m) => m.id === key) || null;
+}
+
+/**
  * Mensajes que el autor de `message` todavía no había recibido cuando lo
  * escribió — o sea, los que se cruzaron en el camino.
  *
@@ -459,15 +474,28 @@ Tu nombre dentro del loop viene en el mensaje que recibiste (por ejemplo
 ybento estado                    # leo mi estado y quién más está en el loop
 ybento estado working            # me marco ocupado (arranco una tarea)
 ybento estado waiting            # me marco libre (terminé, puedo recibir)
+ybento leer 42                   # leo el mensaje #42 completo (y quedo working)
 ybento bandeja                   # mis mensajes pendientes
 ybento enviar @opencito "texto"  # le mando un mensaje a otro agente
 ybento enviar @usuario "texto"   # le aviso al humano
 ybento enviar @opencito --re 7 "…"  # respondo puntualmente al mensaje #7
 \`\`\`
 
-Los mensajes que te mandan **te llegan solos** a esta terminal, ya escritos
-en tu prompt. No hace falta que consultes \`ybento bandeja\` para enterarte:
-está sólo por si querés releer algo.
+Cuando alguien te escribe, **te llega solo un aviso** a esta terminal, de
+una línea: quién te escribe, a qué responde, el número del mensaje y cómo
+leerlo. El texto completo **no** viene en el aviso — leelo con:
+
+\`\`\`bash
+ybento leer 42
+\`\`\`
+
+Eso imprime el mensaje entero, con sus saltos de línea, y te marca
+\`working\`. No contestes sólo con el aviso: no tiene el contenido.
+
+Si tu herramienta te pide permiso cada vez que corrés \`ybento\`, pedile al
+usuario que lo permita (en Claude Code: \`Bash(ybento:*)\`); si no, el loop
+se frena esperando a que alguien apriete "aceptar". Si \`ybento\` falla, el
+mensaje #n es la línea válida número n de \`.ybento/loop/messages.jsonl\`.
 
 ## Mensajes largos: no los pases como argumento
 
@@ -490,7 +518,8 @@ ybento enviar @claudio -f reporte-qa.md
 
 ## Cómo trabajar
 
-1. Cuando recibas un mensaje, marcate \`working\` **antes** de empezar.
+1. Cuando recibas un aviso, leé el mensaje con \`ybento leer <n>\`. Eso ya
+   te marca \`working\`.
 2. Hacé la tarea que te pidieron.
 3. Al terminar, reportá con \`ybento enviar\`. **Eso ya te devuelve a
    \`waiting\` solo** — no tenés que acordarte de nada. Si querés seguir
@@ -579,8 +608,16 @@ export async function ensureSkill(cwd) {
  * líneas, el agente recibe el mensaje partido y el Enter final ya no envía
  * nada — que fue exactamente el bug de la primera prueba de campo.
  *
- * El texto completo, con sus saltos, queda intacto en messages.jsonl y en
- * el panel: acá se colapsa sólo para el viaje por el pty.
+ * **No lleva el cuerpo del mensaje, sólo dónde leerlo** (`ybento leer 42`).
+ * Pegar el texto completo hacía del pty el transporte *y* el registro, y de
+ * ahí salieron los peores bugs: el Enter tragado en mensajes largos (025),
+ * el truncamiento (027) y un reporte de 30 líneas llegando aplanado en un
+ * párrafo. Con el aviso, lo que viaja por el pty es siempre corto y lo
+ * genera Bento; el texto completo, con sus saltos, vive en messages.jsonl
+ * y se lee con el CLI. Es el mismo criterio que las Tareas.
+ *
+ * Los metadatos (número, `--re`, sello, cruces, desfase) sí van en el
+ * aviso: son cortos y le dicen al agente qué va a leer antes de abrirlo.
  *
  * **Y sale entre comillas simples**, que es lo que lo vuelve seguro.
  * No siempre hay un TUI escuchando: si el proceso del agente terminó, la
@@ -605,8 +642,9 @@ export function formatForTerminal(message, {
   skillPath = SKILL_FILE, crossed = [], head = null,
 } = {}) {
   const origin = message.from === 'usuario' ? 'del usuario' : `de @${message.from}`;
-  const flat = String(message.text).replace(/\s*\n+\s*/g, ' ').trim();
   const num = message.seq ? `#${message.seq} ` : '';
+  // Por `seq` (el mismo número que usa `--re`); el id sólo si no hay seq.
+  const ref = message.seq || message.id;
 
   // A qué contesta. Va adelante, pegado al número, porque es lo primero
   // que hay que saber para leer el resto: sin esto, dos agentes discuten
@@ -641,8 +679,8 @@ export function formatForTerminal(message, {
 
   const warning = notes.length ? ` [ojo: ${notes.join('; ')}]` : '';
 
-  const body = `[loop] Mensaje ${num}${re}${origin} para @${message.to}: ${flat}`
-    + `${stamp}${warning} `
+  const body = `[loop] Mensaje ${num}${re}${origin} para @${message.to}`
+    + `${stamp}${warning} — leelo con: ybento leer ${ref} `
     + `(sos @${message.to} en este loop; el protocolo está en ${skillPath})`;
 
   // Comillas simples reales -> tipográfica, para poder envolver todo entre

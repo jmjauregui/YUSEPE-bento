@@ -108,7 +108,7 @@ describe('entrega', () => {
 
     expect(writes.pastes).toHaveLength(1);
     expect(writes.pastes[0].ptyId).toBe('pty_claudio');
-    expect(writes.pastes[0].data).toContain('crea una landing');
+    expect(writes.pastes[0].data).toContain('ybento leer 1');
   });
 
   // Del otro lado hay un TUI que detecta ráfagas como pegado: si el Enter
@@ -123,15 +123,17 @@ describe('entrega', () => {
     expect(writes.log[1]).toEqual({ ptyId: 'pty_claudio', data: '\r' });
   });
 
-  // Un `\n` en el medio es un Enter dentro de la caja de texto del agente:
-  // parte el mensaje y rompe el envío.
-  it('colapsa el mensaje a una sola línea', async () => {
+  // Por el pty sólo viaja el aviso: el cuerpo largo era lo que hacía que el
+  // TUI se tragara el Enter (025) o lo truncara (027). Y un `\n` ahí es un
+  // Enter dentro de la caja de texto del agente.
+  it('pega sólo el aviso, en una línea, no el cuerpo', async () => {
     await postMessage(cwd, { from: 'opencito', to: 'claudio', text: 'linea 1\nlinea 2\n\nlinea 3' });
     await dispatcher.tick();
 
     const { data } = writes.pastes[0];
     expect(data).not.toContain('\n');
-    expect(data).toContain('linea 1 linea 2 linea 3');
+    expect(data).not.toContain('linea');
+    expect(data).toContain('ybento leer 1');
   });
 
   it('el texto pegado le dice quién es y dónde está el protocolo', async () => {
@@ -151,8 +153,8 @@ describe('entrega', () => {
     await dispatcher.tick();
 
     const byPty = Object.fromEntries(writes.pastes.map((w) => [w.ptyId, w.data]));
-    expect(byPty.pty_claudio).toContain('para claudio');
-    expect(byPty.pty_opencito).toContain('para opencito');
+    expect(byPty.pty_claudio).toContain('ybento leer 1');
+    expect(byPty.pty_opencito).toContain('ybento leer 2');
   });
 
   // Si esto falla, el agente repite la misma tarea una y otra vez.
@@ -183,11 +185,11 @@ describe('entrega', () => {
 
     await dispatcher.tick();
     expect(writes.pastes).toHaveLength(1);
-    expect(writes.pastes[0].data).toContain('uno');
+    expect(writes.pastes[0].data).toContain('ybento leer 1');
 
     await dispatcher.tick();
     expect(writes.pastes).toHaveLength(2);
-    expect(writes.pastes[1].data).toContain('dos');
+    expect(writes.pastes[1].data).toContain('ybento leer 2');
   });
 
   it('reporta lo entregado', async () => {
@@ -226,7 +228,7 @@ describe('el gate de estado', () => {
     await dispatcher.tick();
 
     expect(writes.pastes).toHaveLength(1);
-    expect(writes.pastes[0].data).toContain('hay un bug');
+    expect(writes.pastes[0].data).toContain('ybento leer 1');
   });
 });
 
@@ -382,7 +384,7 @@ describe('ciclo de vida', () => {
       await postMessage(otro, { from: 'usuario', to: 'claudio', text: 'del nuevo' });
       await dispatcher.tick();
       expect(writes.pastes).toHaveLength(1);
-      expect(writes.pastes[0].data).toContain('del nuevo');
+      expect(writes.pastes[0].data).toContain('ybento leer 1');
     } finally {
       await fs.rm(otro, { recursive: true, force: true });
     }
@@ -416,7 +418,7 @@ describe('ciclo de vida', () => {
     // watch y el poll pueden coincidir). Que no se repita un mensaje ya
     // entregado tiene su propio test.
     expect(writes.pastes.length).toBeGreaterThanOrEqual(1);
-    expect(writes.pastes[0].data).toContain('automático');
+    expect(writes.pastes[0].data).toContain('ybento leer 1');
   });
 
   it('dos vueltas simultáneas no entregan el mismo mensaje dos veces', async () => {
