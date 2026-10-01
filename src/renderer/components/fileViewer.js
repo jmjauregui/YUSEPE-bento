@@ -36,6 +36,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
 const MAX_PDF_PAGES_RENDERED = 30;
 
 const MARKDOWN_RE = /\.(md|markdown)$/i;
+const HTML_RE = /\.html?$/i;
 const IMAGE_RE = /\.(png|jpe?g|gif|webp|bmp|ico)$/i;
 const PDF_RE = /\.pdf$/i;
 const SVG_RE = /\.svg$/i;
@@ -103,6 +104,24 @@ export function renderTextInto(container, { name, raw, maxHeight = 'max-h-[60vh]
     const rendered = h('div', { class: 'prose-bento' });
     rendered.innerHTML = renderMarkdown(raw);
     container.append(rendered);
+    return;
+  }
+  if (HTML_RE.test(name)) {
+    // Render real, no código: mismo trato que Markdown pero con un iframe
+    // sandboxeado (sin allow-same-origin) sobre un blob URL propio — así
+    // el HTML del usuario corre aislado del origin de la app.
+    const blobUrl = URL.createObjectURL(new Blob([raw], { type: 'text/html' }));
+    // `max-h-*` sólo clampea; sin una altura real el iframe cae al alto por
+    // default de 150px. Los llamadores siempre pasan `max-h-`, así que
+    // derivamos el `h-` equivalente en vez de sumar otro parámetro.
+    const heightClass = maxHeight.replace(/^max-h-/, 'h-');
+    const iframe = h('iframe', {
+      src: blobUrl,
+      sandbox: 'allow-scripts allow-forms allow-popups',
+      class: `w-full ${heightClass} bg-white rounded border border-line`,
+    });
+    iframe.addEventListener('load', () => URL.revokeObjectURL(blobUrl), { once: true });
+    container.append(iframe);
     return;
   }
   if (SVG_RE.test(name)) {
