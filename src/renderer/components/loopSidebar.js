@@ -31,6 +31,7 @@ import { ProfileManager } from '../core/profileManager.js';
 import * as liveTiles from '../core/liveTiles.js';
 import { focusTileById } from './bentoGrid.js';
 import { labelFor } from './workspaceManager.js';
+import { renderMarkdown } from '../core/markdown.js';
 import { applySavedWidth, makeResizeHandle } from '../utils/resizableSidebar.js';
 import { toast } from './toast.js';
 import { notifyUserMessage } from '../core/loopNotify.js';
@@ -574,7 +575,11 @@ function messageRow(msg, colors = {}) {
     ? `vos → @${msg.to}`
     : (forMe ? `@${msg.from} → vos` : `@${msg.from} → @${msg.to}`);
 
-  const body = h('div', { class: 'text-xs text-fg whitespace-pre-wrap break-words select-text cursor-text' }, msg.text);
+  // Los agentes escriben en Markdown. Pasa por el renderizador seguro de la
+  // app (el texto de un agente no puede volverse código): `breaks` porque
+  // sus reportes van línea por línea, y sin imágenes en el hilo.
+  const body = h('div', { class: 'loop-msg prose-bento text-xs text-fg break-words select-text cursor-text' });
+  body.innerHTML = renderMarkdown(msg.text, { breaks: true, images: false });
 
   // El nombre del emisor va en su color; el resto del encabezado queda
   // apagado. Así el color aparece dos veces (borde y nombre) y se aprende

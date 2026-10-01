@@ -610,6 +610,21 @@
   }
   .prose-bento img { max-width: 100%; }
 
+  /* Markdown dentro de una burbuja del loop: misma tipografía que tenía el
+     texto plano y márgenes de chat, no de documento — si no, una burbuja
+     crece el doble por puro aire. */
+  .loop-msg.prose-bento { font-size: 0.75rem; line-height: 1.5; color: var(--color-fg); }
+  .loop-msg.prose-bento > :first-child { margin-top: 0; }
+  .loop-msg.prose-bento > :last-child { margin-bottom: 0; }
+  .loop-msg.prose-bento p { margin: 0.35em 0; }
+  .loop-msg.prose-bento h1, .loop-msg.prose-bento h2, .loop-msg.prose-bento h3 {
+    font-size: 1em;
+    margin: 0.7em 0 0.25em;
+  }
+  .loop-msg.prose-bento ul, .loop-msg.prose-bento ol { margin: 0.3em 0; }
+  .loop-msg.prose-bento pre, .loop-msg.prose-bento pre.hljs { margin: 0.4em 0; padding: 0.5em 0.7em; font-size: 0.7rem; }
+  .loop-msg.prose-bento table { display: block; overflow-x: auto; }
+
   /* ---- Resaltado de sintaxis (highlight.js) ---- */
   pre.hljs, .prose-bento pre.hljs {
     background: var(--color-bg-elev);

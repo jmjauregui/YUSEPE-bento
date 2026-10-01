@@ -8,24 +8,11 @@
  *     parseando su frontmatter (name/description/tools/model).
  * --------------------------------------------------------------
  */
-import { marked } from 'marked';
+import { renderMarkdown } from '../core/markdown.js';
 import { h } from '../utils/dom.js';
 import { svgIcon } from '../utils/icons.js';
 import { state } from '../core/state.js';
 import { openModal } from './modal.js';
-import { highlightCode } from '../core/codeHighlight.js';
-
-// Los bloques de código dentro del markdown también pasan por highlight.js
-// (mismo criterio que el preview de archivos — ver fileTreeSidebar.js).
-marked.use({
-  renderer: {
-    code({ text, lang }) {
-      const language = (lang || '').split(/\s+/)[0] || null;
-      const html = highlightCode(text, language);
-      return `<pre class="hljs"><code>${html}</code></pre>\n`;
-    },
-  },
-});
 
 const TEMPLATES = {
   'AGENTS.md': '# AGENTS.md\n\nInstrucciones para agentes de IA que trabajen en este repo.\n\n## Cómo correr el proyecto\n\n## Convenciones de código\n\n## Qué evitar\n',
@@ -200,7 +187,7 @@ export function openAgentPanel() {
         setTimeout(() => textarea.focus(), 0);
       } else {
         const rendered = h('div', { class: 'prose-bento' });
-        rendered.innerHTML = marked.parse(raw);
+        rendered.innerHTML = renderMarkdown(raw);
         contentArea.append(rendered);
       }
     }

@@ -17,7 +17,7 @@
  * acá porque es propio del modal — ver openFileModal.
  * --------------------------------------------------------------
  */
-import { marked } from 'marked';
+import { renderMarkdown } from '../core/markdown.js';
 // Build "legacy" a propósito: apunta a runtimes más viejos y evita APIs
 // muy nuevas (p.ej. Uint8Array.prototype.toHex) que el Chromium de
 // Electron 33 todavía no trae. Con el build normal daba "a.toHex is not a
@@ -45,17 +45,6 @@ const CSV_RE = /\.csv$/i;
 export function isMediaFile(name) {
   return IMAGE_RE.test(name) || PDF_RE.test(name);
 }
-
-// Los bloques de código dentro de Markdown también pasan por highlight.js.
-marked.use({
-  renderer: {
-    code({ text, lang }) {
-      const language = (lang || '').split(/\s+/)[0] || null;
-      const html = highlightCode(text, language);
-      return `<pre class="hljs"><code>${html}</code></pre>\n`;
-    },
-  },
-});
 
 /** Parser CSV simple: soporta comillas con comas/comillas escapadas dentro. */
 function parseCsv(text) {
@@ -112,7 +101,7 @@ export function renderTextInto(container, { name, raw, maxHeight = 'max-h-[60vh]
 
   if (MARKDOWN_RE.test(name)) {
     const rendered = h('div', { class: 'prose-bento' });
-    rendered.innerHTML = marked.parse(raw);
+    rendered.innerHTML = renderMarkdown(raw);
     container.append(rendered);
     return;
   }
