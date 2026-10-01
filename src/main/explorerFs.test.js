@@ -27,7 +27,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
-import { createEntry, duplicateEntry, renameEntry, resolveEntryPath, searchFiles } from './explorerFs.js';
+import { createEntry, duplicateEntry, renameEntry, resolveEntryPath, searchFiles, watchFile } from './explorerFs.js';
 
 let root;
 
@@ -278,5 +278,65 @@ describe('duplicateEntry', () => {
 
   it('rechaza duplicar la raíz del workspace', async () => {
     await expect(duplicateEntry(root, '.')).rejects.toThrow(/raíz del workspace/i);
+  });
+});
+
+describe('watchFile', () => {
+  // Igual que tasksOps.test.js: fs.watch depende del SO, así que se espera
+  // con tope en vez de un delay fijo que podría flakear.
+  const waitForChange = (fired, ms = 2000) => new Promise((resolveWait, reject) => {
+    const started = Date.now();
+    const tick = () => {
+      if (fired.count > 0) return resolveWait();
+      if (Date.now() - started > ms) return reject(new Error('el watcher no disparó'));
+      setTimeout(tick, 10);
+    };
+    tick();
+  });
+
+  // En macOS (FSEvents) el watcher recién armado tarda en arrancar y además
+  // entrega eventos *viejos* de archivos escritos justo antes de vigilar.
+  // Se le da un respiro y se descarta lo que haya llegado hasta ahí.
+  const settle = async (fired) => {
+    await new Promise((r) => setTimeout(r, 150));
+    fired.count = 0;
+  };
+
+  it('devuelve null si la carpeta todavía no existe', () => {
+    expect(watchFile(root, 'nope/archivo.md', () => {})).toBeNull();
+  });
+
+  it('avisa cuando el archivo vigilado cambia por fuera (agente/editor externo)', async () => {
+    await fs.writeFile(path.join(root, 'notas.md'), 'v1');
+
+    const fired = { count: 0 };
+    const stop = watchFile(root, 'notas.md', () => { fired.count++; });
+    expect(stop).toBeTypeOf('function');
+    await settle(fired);
+
+    // Simula un guardado atómico (tmp + rename), como hace writeFile() acá
+    // arriba — es justo el caso que rompe un fs.watch sobre el archivo
+    // mismo en vez de la carpeta contenedora.
+    const tmp = path.join(root, 'notas.md.tmp-x');
+    await fs.writeFile(tmp, 'v2');
+    await fs.rename(tmp, path.join(root, 'notas.md'));
+
+    await waitForChange(fired);
+    stop();
+  });
+
+  it('no avisa por un archivo hermano', async () => {
+    await fs.writeFile(path.join(root, 'notas.md'), 'v1');
+    await fs.writeFile(path.join(root, 'otro.md'), 'v1');
+
+    const fired = { count: 0 };
+    const stop = watchFile(root, 'notas.md', () => { fired.count++; });
+    await settle(fired);
+
+    await fs.writeFile(path.join(root, 'otro.md'), 'v2');
+    await new Promise((r) => setTimeout(r, 150));
+    stop();
+
+    expect(fired.count).toBe(0);
   });
 });

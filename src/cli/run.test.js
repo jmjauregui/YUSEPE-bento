@@ -230,6 +230,68 @@ describe('bandeja', () => {
   });
 });
 
+// Entrega por referencia (032): el repartidor pega "leelo con: ybento leer
+// 42" y el agente lee acá el texto completo.
+describe('leer', () => {
+  beforeEach(setupAgents);
+
+  it('imprime el mensaje completo con sus saltos originales', async () => {
+    await postMessage(cwd, { from: 'opencito', to: 'claudio', text: 'QA:\n[1] falla el login\n[2] ok el resto' });
+    const { code, out } = await cli(['leer', '1']);
+
+    expect(code).toBe(0);
+    expect(out).toContain('#1 de @opencito a @claudio');
+    expect(out).toContain('QA:\n[1] falla el login\n[2] ok el resto');
+  });
+
+  it('acepta #n y muestra a qué responde', async () => {
+    await postMessage(cwd, { from: 'usuario', to: 'opencito', text: 'revisá' });
+    await postMessage(cwd, { from: 'opencito', to: 'claudio', text: 'listo', replyTo: 1 });
+    const { out } = await cli(['leer', '#2']);
+    expect(out).toContain('(responde a #1)');
+    expect(out).toContain('listo');
+  });
+
+  // Simétrico con enviar -> waiting: leer el mensaje es empezar a trabajarlo.
+  it('si el mensaje es mío, quedo en working', async () => {
+    await postMessage(cwd, { from: 'opencito', to: 'claudio', text: 'hacé esto' });
+    const { out } = await cli(['leer', '1']);
+
+    expect(out).toContain('Quedaste en working.');
+    expect((await getAgent(cwd, 'claudio')).state).toBe('working');
+  });
+
+  it('leer uno ajeno (hilo grupal) no cambia ningún estado', async () => {
+    await postMessage(cwd, { from: 'claudio', to: 'opencito', text: 'para opencito' });
+    const { out } = await cli(['leer', '1']);
+
+    expect(out).toContain('para opencito');
+    expect(out).not.toContain('working');
+    expect((await getAgent(cwd, 'claudio')).state).toBe('waiting');
+    expect((await getAgent(cwd, 'opencito')).state).toBe('waiting');
+  });
+
+  it('funciona sin identidad', async () => {
+    await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'hola' });
+    const { code, out } = await cli(['leer', '1'], { env: { YBENTO_AGENT: '' } });
+    expect(code).toBe(0);
+    expect(out).toContain('hola');
+  });
+
+  it('un número que no existe dice qué hacer', async () => {
+    const { code, err } = await cli(['leer', '99']);
+    expect(code).toBe(1);
+    expect(err).toContain('No existe el mensaje 99');
+    expect(err).toContain('ybento bandeja');
+  });
+
+  it('sin número, explica de dónde sacarlo', async () => {
+    const { code, err } = await cli(['leer']);
+    expect(code).toBe(1);
+    expect(err).toContain('ybento leer 42');
+  });
+});
+
 describe('enviar', () => {
   it('postea el mensaje y lo confirma', async () => {
     await setupAgents();

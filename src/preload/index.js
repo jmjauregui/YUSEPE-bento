@@ -69,6 +69,9 @@ contextBridge.exposeInMainWorld('yusepe', {
     absPath: (root, relPath) => ipcRenderer.invoke('explorer:abs-path', { root, relPath }),
     readMedia: (root, relPath) => ipcRenderer.invoke('explorer:read-media', { root, relPath }),
     openInSystem: (root, relPath) => ipcRenderer.invoke('explorer:open-in-system', { root, relPath }),
+    watch: (root, relPath) => ipcRenderer.invoke('explorer:watch', { root, relPath }),
+    unwatch: (root, relPath) => ipcRenderer.invoke('explorer:unwatch', { root, relPath }),
+    onChangedOnDisk: (handler) => on('explorer:changed-on-disk', handler),
   },
 
   git: {

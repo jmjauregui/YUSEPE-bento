@@ -20,7 +20,7 @@ import path from 'path';
 import { promisify } from 'util';
 
 import {
-  crossedMessages, DEFAULT_SKILL, ensureSkill, formatForTerminal, getAgent, inbox, inboxSummary,
+  crossedMessages, DEFAULT_SKILL, ensureSkill, findMessage, formatForTerminal, getAgent, inbox, inboxSummary,
   listAgents, listMessages, LOOP_DIR, markDelivered, MESSAGES_FILE, normalizeName,
   pendingDeliveries, postMessage, readHead, registerAgent, readSkill, setAgentState,
   SKILL_FILE, STATUS_FILE, unregisterAgent, writeSkill,
@@ -553,12 +553,32 @@ describe('pendingDeliveries', () => {
 describe('formatForTerminal', () => {
   it('incluye el remitente, el destinatario y la ruta del skill', () => {
     const text = formatForTerminal(
-      { from: 'opencito', to: 'claudio', text: 'el botón no anda' },
+      { from: 'opencito', to: 'claudio', text: 'el botón no anda', seq: 7 },
     );
     expect(text).toContain('@opencito');
     expect(text).toContain('@claudio');
-    expect(text).toContain('el botón no anda');
     expect(text).toContain(SKILL_FILE);
+  });
+
+  // Entrega por referencia (032): por el pty viaja dónde leerlo, no el
+  // cuerpo. Un cuerpo largo era lo que hacía tragar el Enter (025) y
+  // truncar (027).
+  it('no lleva el cuerpo, sólo cómo leerlo', () => {
+    const text = formatForTerminal({ from: 'opencito', to: 'claudio', text: 'el botón no anda', seq: 7 });
+    expect(text).not.toContain('el botón no anda');
+    expect(text).toContain('ybento leer 7');
+  });
+
+  it('sin seq apunta al id', () => {
+    const text = formatForTerminal({ id: 'abc-123', from: 'opencito', to: 'claudio', text: 'x' });
+    expect(text).toContain('ybento leer abc-123');
+  });
+
+  it('el aviso mide lo mismo con un cuerpo de 10 000 caracteres que con uno de 10', () => {
+    const base = { from: 'opencito', to: 'claudio', seq: 3 };
+    const chico = formatForTerminal({ ...base, text: 'x'.repeat(10) });
+    const grande = formatForTerminal({ ...base, text: 'x'.repeat(10_000) });
+    expect(grande.length).toBe(chico.length);
   });
 
   it('al usuario lo nombra en humano, no como @usuario', () => {
@@ -577,7 +597,6 @@ describe('formatForTerminal', () => {
     });
 
     expect(text).not.toContain('\n');
-    expect(text).toContain('Corregidos los 4 defectos: [1] penPreview [2] filtros únicos');
   });
 
   it('el texto original conserva sus saltos (sólo se aplana al viajar por el pty)', async () => {
@@ -600,14 +619,14 @@ describe('formatForTerminal', () => {
       return out;
     };
 
+    // Con la entrega por referencia el cuerpo ya ni viaja por el pty: lo
+    // que escribió el agente no llega al shell de ninguna forma.
     it('un backtick no puede ejecutar nada', () => {
-      const out = wrapped('revisá el modulo `touch /tmp/exploit` porfa');
-      // El backtick sobrevive como texto, pero encerrado: el shell no lo evalúa.
-      expect(out).toContain('`touch /tmp/exploit`');
+      expect(wrapped('revisá el modulo `touch /tmp/exploit` porfa')).not.toContain('`');
     });
 
     it('$(...) tampoco', () => {
-      expect(wrapped('corré $(rm -rf ~) para probar')).toContain('$(rm -rf ~)');
+      expect(wrapped('corré $(rm -rf ~) para probar')).not.toContain('$(');
     });
 
     it('una comilla sin cerrar no deja al shell esperando', () => {
@@ -616,12 +635,33 @@ describe('formatForTerminal', () => {
     });
 
     it('los paréntesis dejan de romper el parseo', () => {
-      expect(wrapped('QA pinceles (3 botones) units.ts:128')).toContain('(3 botones)');
+      expect(wrapped('QA pinceles (3 botones) units.ts:128')).not.toContain('(3 botones)');
     });
 
     it('las comillas dobles y el $ pelado no rompen nada', () => {
       wrapped('el label dice "Guardar" y cuesta $5');
     });
+  });
+});
+
+describe('findMessage', () => {
+  it('resuelve 42, #42 y el id', async () => {
+    await setupAgents();
+    await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'uno' });
+    const dos = await postMessage(cwd, { from: 'claudio', to: 'opencito', text: 'dos' });
+
+    expect((await findMessage(cwd, 2)).text).toBe('dos');
+    expect((await findMessage(cwd, '#2')).text).toBe('dos');
+    expect((await findMessage(cwd, dos.id)).seq).toBe(2);
+  });
+
+  it('null si no existe (o no hay mensajes)', async () => {
+    expect(await findMessage(cwd, 1)).toBeNull();
+    await setupAgents();
+    await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'uno' });
+    expect(await findMessage(cwd, 99)).toBeNull();
+    expect(await findMessage(cwd, 0)).toBeNull();
+    expect(await findMessage(cwd, 'no-existe')).toBeNull();
   });
 });
 

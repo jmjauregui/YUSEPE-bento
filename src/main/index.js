@@ -323,7 +323,7 @@ function configureSession() {
           "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
           "style-src 'self' 'unsafe-inline'; " +
           "img-src 'self' data: blob: https:; " +
-          "frame-src 'self' https:; " +
+          "frame-src 'self' https: blob:; " +
           "connect-src 'self' https: http:;",
         ],
         'X-Content-Type-Options': ['nosniff'],

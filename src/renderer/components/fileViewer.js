@@ -17,7 +17,7 @@
  * acá porque es propio del modal — ver openFileModal.
  * --------------------------------------------------------------
  */
-import { marked } from 'marked';
+import { renderMarkdown } from '../core/markdown.js';
 // Build "legacy" a propósito: apunta a runtimes más viejos y evita APIs
 // muy nuevas (p.ej. Uint8Array.prototype.toHex) que el Chromium de
 // Electron 33 todavía no trae. Con el build normal daba "a.toHex is not a
@@ -36,6 +36,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
 const MAX_PDF_PAGES_RENDERED = 30;
 
 const MARKDOWN_RE = /\.(md|markdown)$/i;
+const HTML_RE = /\.html?$/i;
 const IMAGE_RE = /\.(png|jpe?g|gif|webp|bmp|ico)$/i;
 const PDF_RE = /\.pdf$/i;
 const SVG_RE = /\.svg$/i;
@@ -45,17 +46,6 @@ const CSV_RE = /\.csv$/i;
 export function isMediaFile(name) {
   return IMAGE_RE.test(name) || PDF_RE.test(name);
 }
-
-// Los bloques de código dentro de Markdown también pasan por highlight.js.
-marked.use({
-  renderer: {
-    code({ text, lang }) {
-      const language = (lang || '').split(/\s+/)[0] || null;
-      const html = highlightCode(text, language);
-      return `<pre class="hljs"><code>${html}</code></pre>\n`;
-    },
-  },
-});
 
 /** Parser CSV simple: soporta comillas con comas/comillas escapadas dentro. */
 function parseCsv(text) {
@@ -112,8 +102,26 @@ export function renderTextInto(container, { name, raw, maxHeight = 'max-h-[60vh]
 
   if (MARKDOWN_RE.test(name)) {
     const rendered = h('div', { class: 'prose-bento' });
-    rendered.innerHTML = marked.parse(raw);
+    rendered.innerHTML = renderMarkdown(raw);
     container.append(rendered);
+    return;
+  }
+  if (HTML_RE.test(name)) {
+    // Render real, no código: mismo trato que Markdown pero con un iframe
+    // sandboxeado (sin allow-same-origin) sobre un blob URL propio — así
+    // el HTML del usuario corre aislado del origin de la app.
+    const blobUrl = URL.createObjectURL(new Blob([raw], { type: 'text/html' }));
+    // `max-h-*` sólo clampea; sin una altura real el iframe cae al alto por
+    // default de 150px. Los llamadores siempre pasan `max-h-`, así que
+    // derivamos el `h-` equivalente en vez de sumar otro parámetro.
+    const heightClass = maxHeight.replace(/^max-h-/, 'h-');
+    const iframe = h('iframe', {
+      src: blobUrl,
+      sandbox: 'allow-scripts allow-forms allow-popups',
+      class: `w-full ${heightClass} bg-white rounded border border-line`,
+    });
+    iframe.addEventListener('load', () => URL.revokeObjectURL(blobUrl), { once: true });
+    container.append(iframe);
     return;
   }
   if (SVG_RE.test(name)) {
