@@ -12,6 +12,9 @@ import { getTheme, applyTheme } from '../core/theme.js';
 import { buildWallpaperSection } from './wallpaperPicker.js';
 import { SOUNDS, getSound, setSound, playSound } from '../core/loopNotify.js';
 import { getLoopMode, setLoopMode } from './loopSidebar.js';
+import { autoArrangeTiles } from './bentoGrid.js';
+import { state } from '../core/state.js';
+import { toast } from './toast.js';
 
 export function openSettings() {
   function themeButton(mode, iconName, label) {
@@ -124,6 +127,27 @@ export function openSettings() {
     ]);
   }
 
+  // Reordenar (spec 035): junto al fondo, porque es "cómo se ve este espacio".
+  function buildArrangeSection() {
+    const count = state.profile?.tiles?.length || 0;
+    return h('div', { class: 'flex items-start justify-between gap-3' }, [
+      h('div', {}, [
+        h('span', { class: 'text-sm text-fg block mb-1' }, 'Reordenar tiles'),
+        h('p', { class: 'text-[11px] text-fg-subtle leading-relaxed' },
+          'Reparte los tiles en una grilla pareja que llena la pantalla. Las terminales siguen '
+          + 'vivas; el acomodo manual actual se pierde. Sirve también si un tile quedó fuera de la vista.'),
+      ]),
+      h('button', {
+        class: 'shrink-0 inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border border-line '
+          + 'hover:bg-bg-elev transition disabled:opacity-40 disabled:cursor-not-allowed',
+        disabled: !count,
+        onClick: () => {
+          if (autoArrangeTiles()) toast.success(`${count} tile${count === 1 ? '' : 's'} reordenado${count === 1 ? '' : 's'}`);
+        },
+      }, [svgIcon('grid', { size: 14 }), h('span', {}, 'Reordenar')]),
+    ]);
+  }
+
   const body = h('div', {}, [
     themeRow,
     h('div', { class: 'border-t border-line my-4' }),
@@ -133,6 +157,7 @@ export function openSettings() {
     h('div', { class: 'border-t border-line my-4' }),
     h('label', { class: 'text-sm text-fg block mb-1' }, 'Fondo de este espacio'),
     buildWallpaperSection(),
+    ...(state.profile ? [h('div', { class: 'border-t border-line my-4' }), buildArrangeSection()] : []),
   ]);
 
   openModal({ title: 'Configuración', body, size: 'lg' });

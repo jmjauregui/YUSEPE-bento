@@ -395,3 +395,47 @@ export function moveTileTo(tiles, tileId, desiredCol, desiredRow, gridCols = GRI
     cellsOf(pos.col, pos.row, oCS, oRS, (k) => occupied.add(k));
   }
 }
+
+/** Reparte `total` en `parts` enteros parejos, el resto en los primeros. */
+function splitEven(total, parts) {
+  const base = Math.floor(total / parts);
+  const extra = total % parts;
+  return Array.from({ length: parts }, (_, i) => base + (i < extra ? 1 : 0));
+}
+
+/**
+ * Reordena todos los tiles en una grilla pareja que ocupa exactamente
+ * `rows` × `gridCols` (spec 035). Muta `tiles` en el lugar.
+ *
+ * - Orden de lectura previo (fila, columna): el primero sigue primero.
+ * - Columnas según la forma de la pantalla (`aspect` = ancho/alto), y
+ *   después se emparejan: 4 tiles dan 2×2, no 3+1.
+ * - La última banda, si queda incompleta, reparte su ancho entre los que
+ *   tiene: sin huecos.
+ */
+export function autoArrange(tiles, { rows, aspect = 16 / 9, gridCols = GRID_COLS } = {}) {
+  const n = tiles.length;
+  if (!n) return tiles;
+
+  const ordered = [...tiles].sort((a, b) => ((a.row || 1) - (b.row || 1)) || ((a.col || 1) - (b.col || 1)));
+
+  let cols = Math.min(n, Math.max(1, Math.ceil(Math.sqrt(n * aspect))));
+  const bands = Math.ceil(n / cols);
+  cols = Math.ceil(n / bands);
+
+  // Nunca menos de una fila por banda, aunque la pantalla sea muy baja.
+  const heights = splitEven(Math.max(rows, bands), bands);
+
+  let row = 1;
+  heights.forEach((rowSpan, b) => {
+    const band = ordered.slice(b * cols, (b + 1) * cols);
+    let col = 1;
+    splitEven(gridCols, band.length).forEach((colSpan, i) => {
+      Object.assign(band[i], { col, row, colSpan, rowSpan });
+      col += colSpan;
+    });
+    row += rowSpan;
+  });
+
+  return tiles;
+}
