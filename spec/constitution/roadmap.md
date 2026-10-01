@@ -45,6 +45,9 @@ _(vacío — definir la próxima feature en `tasks.md` raíz antes de crear la c
 33. **035 · feature: Redimensionar un tile desde cualquier borde** — izquierda, arriba y las cuatro esquinas, resolviendo el crecimiento por espejo sobre las funciones ya testeadas del grid (6b54d5d).
 34. **036 · feature: Observador de inactividad del loop** — mide la salida de cada terminal y avisa a un agente designado (o al usuario) cuando el loop se frenó; umbral configurable, un aviso por episodio, nunca escribe en un pty (a7ed33e).
 
+35. **037 · feature: Estado por agente en el hilo del loop** — punto pegado al nombre en las pills y el roster: verde disponible, rojo ocupado (medido por la salida real del pty, no por la etiqueta), ámbar trabado, gris caído. Titileo con una fase global; el punto del acordeón pasa a un solo color de alerta con el texto en palabras (2304727).
+36. **039 · feature: Buscador en el hilo del loop** — Ctrl+F filtra el hilo sobre todo el historial y resalta; flechas que arrancan en el resultado más reciente y suben, sin dar la vuelta; el texto se busca literal y el atajo no se le roba a las terminales (2304727).
+
 ## Backlog / ideas 💡
 
 - **Loop: chunking de mensajes largos** — se descartó en sesión 2025-08; el usuario prefiere pasar el mensaje completo sin fragmentar.
