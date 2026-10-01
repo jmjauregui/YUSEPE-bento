@@ -32,6 +32,9 @@ import * as liveTiles from '../core/liveTiles.js';
 import { focusTileById } from './bentoGrid.js';
 import { labelFor } from './workspaceManager.js';
 import { renderMarkdown } from '../core/markdown.js';
+import {
+  badgeLabel, cursorAtEnd, ensureCursor, saveCursor, unreadSummary,
+} from '../core/loopUnread.js';
 import { applySavedWidth, makeResizeHandle } from '../utils/resizableSidebar.js';
 import { toast } from './toast.js';
 import { notifyUserMessage } from '../core/loopNotify.js';
@@ -172,6 +175,15 @@ function savedOpenState(profileId) {
  */
 let lastNotifiedAt = 0;
 
+/**
+ * No leídos del usuario (spec 034). `lastMessages` es la última ventana
+ * leída del disco: "marcar todo como leído" marca hasta ahí, así un mensaje
+ * que llegó y todavía no se vio sigue sin leer.
+ */
+let unread = { count: 0, forUser: false, ids: new Set() };
+let lastMessages = [];
+let markReadBtn = null;
+
 const cwd = () => state.profile?.cwd || null;
 
 export function initLoopSidebar() {
@@ -191,7 +203,8 @@ export function initLoopSidebar() {
     renderedSig = null;
     // No notificar mensajes que ya existían al abrir el workspace.
     lastNotifiedAt = Date.now();
-    if (cwd()) window.yusepe.loop.start(cwd());
+    applyUnread(null);
+    if (cwd()) { window.yusepe.loop.start(cwd()); updateUnread(); }
     // Restaurar el estado abierto/cerrado guardado para este workspace.
     if (savedOpenState(state.profile?.id)) openSidebar();
     else closeSidebar();
@@ -206,11 +219,13 @@ export function initLoopSidebar() {
       window.yusepe.loop.stop(cwd());
     }
   });
-  bus.on('profile:cleared', () => { closeSidebar(); window.yusepe.loop.stop(); });
+  bus.on('profile:cleared', () => { closeSidebar(); window.yusepe.loop.stop(); applyUnread(null); });
 
   // Cambios en disco (los postea el CLI de cada agente, desde otro proceso).
-  window.yusepe.loop.onChanged(() => { if (isOpen) refresh(); checkNotify(); });
-  window.yusepe.loop.onDelivered(() => { if (isOpen) refresh(); checkNotify(); });
+  // Con el panel cerrado, igual hay que actualizar el contador del botón:
+  // es justamente cuando más fácil se pierde un mensaje.
+  window.yusepe.loop.onChanged(() => { if (isOpen) refresh(); else updateUnread(); checkNotify(); });
+  window.yusepe.loop.onDelivered(() => { if (isOpen) refresh(); else updateUnread(); checkNotify(); });
   // Un agente que se cae no genera ningún cambio en disco, así que sin
   // este aviso el panel lo seguiría mostrando en verde.
   window.yusepe.loop.onPresence(({ agent, present }) => {
@@ -241,6 +256,68 @@ async function checkNotify() {
   } catch {
     // No bloquear la UI si la notificación falla
   }
+}
+
+/* ---------- No leídos ---------- */
+
+async function updateUnread() {
+  if (!cwd()) return;
+  try {
+    applyUnread(await window.yusepe.loop.messages(cwd(), { limit: 200 }));
+  } catch { /* el contador no vale romper nada */ }
+}
+
+/**
+ * `null` = limpiar sin tocar el cursor (cambio de workspace, antes de leer
+ * sus mensajes). Con `[]` se fijaría el cursor de un workspace con historial
+ * en "nada leído" y aparecería todo el historial como nuevo.
+ */
+function applyUnread(messages) {
+  lastMessages = messages || [];
+  unread = messages && cwd()
+    ? unreadSummary(messages, ensureCursor(cwd(), messages))
+    : { count: 0, forUser: false, ids: new Set() };
+  paintUnreadBadge();
+  paintUnreadStream();
+  paintMarkReadBtn();
+}
+
+function markAllRead() {
+  if (!cwd()) return;
+  saveCursor(cwd(), cursorAtEnd(lastMessages));
+  applyUnread(lastMessages);
+}
+
+/** Contador en el botón del loop de la barra superior. */
+function paintUnreadBadge() {
+  const badge = document.getElementById('loop-unread-badge');
+  if (!badge) return;
+  badge.textContent = badgeLabel(unread.count);
+  badge.classList.toggle('hidden', !unread.count);
+  // Acento si alguno es para vos; neutro si son sólo charlas entre agentes.
+  badge.classList.toggle('is-user', unread.forUser);
+}
+
+/**
+ * Marcas sobre los nodos ya pintados, sin rehacer el hilo: así marcar todo
+ * como leído no hace perder el scroll ni la selección (spec 023).
+ */
+function paintUnreadStream() {
+  if (!streamEl) return;
+  let first = true;
+  for (const row of streamEl.children) {
+    const is = unread.ids.has(row.dataset.id);
+    row.classList.toggle('is-unread', is);
+    row.classList.toggle('is-unread-user', is && row.dataset.to === 'usuario');
+    row.classList.toggle('is-unread-first', is && first);
+    if (is) first = false;
+  }
+}
+
+function paintMarkReadBtn() {
+  if (!markReadBtn) return;
+  markReadBtn.disabled = !unread.count;
+  markReadBtn.lastChild.textContent = unread.count ? `Marcar leído (${badgeLabel(unread.count)})` : 'Todo leído';
 }
 
 export function isLoopSidebarOpen() {
@@ -286,8 +363,16 @@ function buildChrome() {
     h('span', {}, 'Loop'),
   ]);
 
+  markReadBtn = h('button', {
+    class: 'inline-flex items-center gap-1 text-[10px] text-fg-muted hover:text-fg px-1.5 py-0.5 rounded shrink-0 '
+      + 'disabled:opacity-40 disabled:hover:text-fg-muted',
+    title: 'Marcar todo como leído',
+    onClick: markAllRead,
+  }, [svgIcon('check', { size: 12 }), h('span', {}, 'Todo leído')]);
+
   const header = h('div', { class: 'flex items-center gap-1.5 px-2 py-1.5 border-b border-line shrink-0' }, [
     title,
+    markReadBtn,
     h('button', {
       class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg px-1 shrink-0',
       title: 'Protocolo que leen los agentes (.ybento/loop/skill.md)',
@@ -322,6 +407,7 @@ async function refresh() {
     ]);
     renderRoster(agents, presence || {});
     renderStream(messages, agents);
+    applyUnread(messages);
     renderComposer(agents);
   } catch (err) {
     streamEl.innerHTML = '';
@@ -609,7 +695,7 @@ function messageRow(msg, colors = {}) {
   // en tema claro y oscuro.
   const bubble = h('div', {
     class: [
-      'max-w-[85%] rounded-lg px-2.5 py-1.5 border',
+      'loop-bubble max-w-[85%] rounded-lg px-2.5 py-1.5 border',
       mine
         ? 'bg-accent/15 border-accent/30'
         : (forMe ? 'bg-bg-elev border-accent/20' : 'bg-bg-elev border-line'),
@@ -619,7 +705,12 @@ function messageRow(msg, colors = {}) {
       : null,
   }, parts);
 
-  return h('div', { class: `flex ${mine ? 'justify-end' : 'justify-start'}` }, [bubble]);
+  // data-id / data-to: los usa paintUnreadStream para marcar sin redibujar.
+  return h('div', {
+    class: `loop-row flex ${mine ? 'justify-end' : 'justify-start'}`,
+    'data-id': msg.id,
+    'data-to': msg.to,
+  }, [bubble]);
 }
 
 /**
