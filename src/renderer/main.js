@@ -8,7 +8,7 @@
 import { ProfileManager } from './core/profileManager.js';
 import { state } from './core/state.js';
 import { bus } from './core/eventBus.js';
-import { renderBento, closeFocusedTile, focusNeighbor, moveFocusedTile } from './components/bentoGrid.js';
+import { renderBento, closeFocusedTile, focusNeighbor, moveFocusedTile, toggleAddressBar } from './components/bentoGrid.js';
 import { TileFactory } from './components/tile.js';
 import { openAddToSpace } from './components/addToSpace.js';
 import { openSettings } from './components/settings.js';
@@ -23,6 +23,9 @@ import { initFileTreeSidebar, toggleFileTreeSidebar } from './components/fileTre
 import { openGitPanel } from './components/gitPanel.js';
 import { openAgentPanel } from './components/agentPanel.js';
 import { openWorkspaceManager } from './components/workspaceManager.js';
+import { pickTemplate } from './components/templatePicker.js';
+import { setPendingAttach } from './components/terminal.js';
+import { instantiateTemplate } from './core/layoutTemplates.js';
 import { openCommandPalette } from './components/commandPalette.js';
 import { openQuickOpenFile } from './components/quickOpenFile.js';
 import { openShortcutsCheatsheet } from './components/shortcutsCheatsheet.js';
@@ -211,7 +214,13 @@ async function createNewProfile() {
     });
     const cwd = confirmed ? await pickFolder() : null;
 
-    const p = await ProfileManager.create(name, cwd);
+    // Tercer paso: plantilla de distribución. Cerrar el selector sin
+    // elegir cancela la creación (no queda un workspace a medias).
+    const template = await pickTemplate();
+    if (!template) return;
+    const tiles = instantiateTemplate(template);
+
+    const p = await ProfileManager.create(name, cwd, tiles);
     await refreshProfileSelect(p.id);
     await ProfileManager.load(p.id);
     showView();
@@ -355,6 +364,7 @@ function renderWorkspaceTabs() {
         : count
           ? `${name} · ${count} tile(s) en segundo plano — clic para abrir`
           : `${name} — clic para abrir`,
+      draggable: 'true',
       onMousedown: (e) => {
         if (e.button === 0 && !isActive) activateProfile(id);
       },
@@ -365,6 +375,12 @@ function renderWorkspaceTabs() {
           activateProfile(id);
         }
       },
+      onContextmenu: (e) => { e.preventDefault(); openTabMenu(id, name, isActive); },
+      // Arrastrar la pestaña fuera de la ventana la abre en una ventana
+      // nueva (estilo Chrome). Adentro de la ventana no reordena: no hay
+      // orden persistente de pestañas que reordenar.
+      onDragstart: (e) => { try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', id); } catch { /* noop */ } },
+      onDragend: (e) => { if (isOutsideWindow(e.screenX, e.screenY)) detachWorkspace(id); },
     }, [
       h('span', {
         class:
@@ -372,6 +388,15 @@ function renderWorkspaceTabs() {
           (isActive ? 'bg-accent' : count ? 'bg-accent/50' : 'bg-transparent'),
       }),
       h('span', { class: 'truncate max-w-[11rem]' }, name),
+      h('button', {
+        class:
+          'inline-flex items-center rounded p-0.5 text-fg-subtle hover:text-accent hover:bg-accent/10 transition ' +
+          (isActive ? '' : 'opacity-0 group-hover:opacity-100'),
+        title: `Abrir "${name}" en una ventana nueva`,
+        dataset: { action: 'detach' },
+        onMousedown: (e) => { e.stopPropagation(); },
+        onClick: (e) => { e.stopPropagation(); detachWorkspace(id); },
+      }, svgIcon('external', { size: 12 })),
       h('button', {
         class:
           'inline-flex items-center rounded p-0.5 text-fg-subtle hover:text-red-400 hover:bg-red-400/10 transition ' +
@@ -418,6 +443,7 @@ async function closeWorkspaceTab(profileId, name, isActive) {
 
   removeOpenTab(profileId);
   liveTiles.killWorkspace(profileId);
+  window.yusepe.workspaces?.release?.(profileId);
 
   if (isActive) {
     if (next) {
@@ -434,9 +460,66 @@ async function closeWorkspaceTab(profileId, name, isActive) {
 /* ---------- Event handlers ---------- */
 
 async function activateProfile(id) {
-  await ProfileManager.load(id);
+  const loaded = await ProfileManager.load(id);
+  if (!loaded) {
+    // Rechazado (abierto en otra ventana): dejar la UI como estaba.
+    profileSelect.value = state.activeProfileId || '';
+    return;
+  }
   profileSelect.value = id;
   showView();
+}
+
+/**
+ * Suelta un workspace hacia una ventana nueva. Las terminales NO se matan:
+ * se sueltan sus vistas y la ventana nueva se engancha a los mismos ptys
+ * (ver terminal.js setPendingAttach). Los webviews se recrean allá.
+ */
+async function detachWorkspace(profileId) {
+  const tileToPty = {};
+  for (const [tileId, entry] of liveTiles.entriesForProfile(profileId)) {
+    if (entry.kind === 'terminal' && entry.meta?.ptyId) {
+      tileToPty[tileId] = entry.meta.ptyId;
+      liveTiles.release(tileId);
+    } else {
+      liveTiles.kill(tileId);
+    }
+  }
+  const wasActive = state.activeProfileId === profileId;
+  const next = wasActive ? tabOrder().find((id) => id !== profileId) : null;
+  removeOpenTab(profileId);
+  if (wasActive) {
+    if (next) {
+      await activateProfile(next);
+    } else {
+      profileSelect.value = '';
+      ProfileManager.clear();
+    }
+  } else {
+    renderWorkspaceTabs();
+  }
+  await window.yusepe.workspaces.release(profileId);
+  const res = await window.yusepe.windows.openWorkspace(profileId, tileToPty);
+  if (!res?.ok) {
+    bus.emit('toast', { type: 'error', message: 'No se pudo abrir el workspace en una ventana nueva.' });
+  }
+}
+
+/** Menú contextual de una pestaña de workspace. */
+async function openTabMenu(id, name, isActive) {
+  const picked = await window.yusepe.menu.popup([
+    { id: 'detach', label: 'Abrir en ventana nueva' },
+    { type: 'separator' },
+    { id: 'close', label: `Cerrar "${name}"` },
+  ]);
+  if (picked === 'detach') detachWorkspace(id);
+  else if (picked === 'close') closeWorkspaceTab(id, name, isActive);
+}
+
+/** true si el punto (en coordenadas de pantalla) cae fuera de esta ventana. */
+function isOutsideWindow(screenX, screenY) {
+  return screenX < window.screenX || screenX > window.screenX + window.outerWidth
+    || screenY < window.screenY || screenY > window.screenY + window.outerHeight;
 }
 
 profileSelect.addEventListener('change', (e) => {
@@ -489,6 +572,7 @@ window.yusepe.menu.onSettings(() => openSettings());
 window.yusepe.menu.onTileAction(({ type, dir }) => {
   if (type === 'focus') focusNeighbor(dir);
   else if (type === 'move') moveFocusedTile(dir);
+  else if (type === 'address-bar') toggleAddressBar();
 });
 
 // `?` abre el cheatsheet de atajos — salvo que estés tipeando en un campo
@@ -568,5 +652,22 @@ bus.on('calc:result', ({ value }) => {
   await refreshProfileSelect();
   showView();
   renderWorkspaceTabs();
+
+  // Otra ventana creó/borró/renombró un workspace: refrescar la lista.
+  window.yusepe.workspaces?.onChanged?.(async () => {
+    await refreshProfileSelect(state.activeProfileId);
+    renderWorkspaceTabs();
+    if (!state.profile) renderProfileList();
+  });
+
+  // Ventana abierta para recibir un workspace de otra (ver
+  // main/index.js window:open-workspace): retira el traspaso de
+  // terminales y arranca directo en ese workspace.
+  const startProfile = new URLSearchParams(location.search).get('profile');
+  if (startProfile) {
+    const map = await window.yusepe.windows?.takeHandoff?.(startProfile);
+    if (map) setPendingAttach(Object.entries(map));
+    await activateProfile(startProfile);
+  }
   bus.emit('app:ready');
 })();

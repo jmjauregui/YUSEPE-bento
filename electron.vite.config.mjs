@@ -1,8 +1,26 @@
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execSync } from 'node:child_process';
 import { loadEnv, defineConfig, externalizeDepsPlugin } from 'electron-vite';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Commits recientes quemados en build-time para el diálogo About.
+// git log de los últimos 30 commits sin merges; si git no está disponible
+// (CI shallow clone, build sin historial) queda vacío, no falla.
+let changelog = [];
+try {
+  const raw = execSync(
+    'git log -30 --pretty=format:"%s|%h|%ad" --date=short --no-merges',
+    { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] },
+  ).trim();
+  if (raw) {
+    changelog = raw.split('\n').filter(Boolean).map((line) => {
+      const [msg, hash, date] = line.split('|');
+      return { msg: msg || '', hash: hash || '', date: date || '' };
+    });
+  }
+} catch { /* git no disponible en este entorno de build */ }
 
 // Sin prefijo (no VITE_) para que loadEnv() de Vite no lo descarte —
 // electron-vite solo trae automáticamente los prefijados. Se inyecta acá
@@ -24,6 +42,9 @@ export default defineConfig({
     // .env con el que se compiló la app.
     define: {
       'process.env.APIKEY_PEXELS': JSON.stringify(env.APIKEY_PEXELS || ''),
+      // Array de { msg, hash, date } quemado en build-time desde git log.
+      // ESLint lo conoce como global de solo lectura (ver eslint.config.mjs).
+      '__CHANGELOG__': JSON.stringify(changelog),
     },
     build: {
       rollupOptions: {

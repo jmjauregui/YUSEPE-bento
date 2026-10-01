@@ -18,9 +18,17 @@ const SIZE_CLASSES = {
 };
 
 let escListener = null;
+// Callback de cierre del modal actual (Esc, ×, clic fuera o closeModal()).
+// Lo usan los selectores que devuelven una promesa, para resolver `null`
+// cuando el usuario cierra sin elegir (ver templatePicker.js).
+let onCloseCb = null;
 
-/** `size`: 'md' (default, prompts/confirms) | 'lg' (preview de archivos/código). */
-export function openModal({ title, body, size = 'md' }) {
+/**
+ * `size`: 'md' (default, prompts/confirms) | 'lg' (preview de archivos/código).
+ * `onClose`: se invoca una sola vez cuando el modal se cierra por cualquier vía.
+ */
+export function openModal({ title, body, size = 'md', onClose = null }) {
+  onCloseCb = typeof onClose === 'function' ? onClose : null;
   titleEl().textContent = title;
   bodyEl().innerHTML = '';
   if (body instanceof Node) bodyEl().append(body);
@@ -46,6 +54,9 @@ export function closeModal() {
     document.removeEventListener('keydown', escListener);
     escListener = null;
   }
+  const cb = onCloseCb;
+  onCloseCb = null;
+  if (cb) { try { cb(); } catch { /* noop */ } }
 }
 
 /** Reemplazo de window.prompt(). Resuelve con string o null. */

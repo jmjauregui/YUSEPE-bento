@@ -31,7 +31,11 @@ export default [
       '*.config.{js,mjs,cjs}',
     ],
     languageOptions: {
-      globals: { ...globals.node },
+      globals: {
+        ...globals.node,
+        // Constantes quemadas en build-time por electron.vite.config.mjs via `define`.
+        __CHANGELOG__: 'readonly',
+      },
     },
   },
 
@@ -59,6 +63,16 @@ export default [
     files: ['**/*.test.js'],
     languageOptions: {
       globals: { ...globals.node },
+    },
+  },
+
+  // E2E (Playwright sobre la app real): el script corre en Node, pero los
+  // callbacks de `page.evaluate` / `waitForFunction` corren dentro del
+  // renderer, así que necesitan los dos entornos.
+  {
+    files: ['e2e/**/*.mjs'],
+    languageOptions: {
+      globals: { ...globals.node, ...globals.browser },
     },
   },
 

@@ -16,10 +16,11 @@ import { h } from '../utils/dom.js';
 import { svgIcon } from '../utils/icons.js';
 import { bus } from '../core/eventBus.js';
 import { state } from '../core/state.js';
-import { openModal } from './modal.js';
+import { openModal, promptModal } from './modal.js';
 import { ProfileManager } from '../core/profileManager.js';
 import * as liveTiles from '../core/liveTiles.js';
 import { normalizeUrl } from './webviewTile.js';
+import { templateFromProfile, validateTemplate } from '../core/layoutTemplates.js';
 
 const ZOOM_STEP = 0.1;
 const ZOOM_MIN = 0.5;
@@ -61,15 +62,54 @@ export function openWorkspaceManager() {
 
   const table = h('table', { class: 'w-full text-xs border-collapse' });
 
+  // "Guardar distribución como plantilla": la geometría de los tiles de
+  // este workspace queda disponible en el selector de "Nuevo workspace".
+  const saveTemplateBtn = h('button', {
+    class: 'inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-line hover:bg-bg-elev transition',
+    title: 'Guarda la posición y tamaño de estos tiles como plantilla para crear otros workspaces iguales',
+    onClick: saveAsTemplate,
+  }, [svgIcon('save', { size: 13 }), h('span', {}, 'Guardar distribución como plantilla')]);
+
   openModal({
     title: 'Administrador del workspace',
     body: h('div', {}, [
       h('p', { class: 'text-xs text-fg-subtle mb-3' },
         'Tiles abiertos en este espacio de trabajo.'),
       h('div', { class: 'max-h-[62vh] overflow-auto' }, [table]),
+      h('div', { class: 'mt-3 flex justify-end' }, [saveTemplateBtn]),
     ]),
     size: 'lg',
   });
+
+  async function saveAsTemplate() {
+    const profile = state.profile;
+    if (!profile) return;
+    const tiles = profile.tiles || [];
+    // Reabrir el administrador después: promptModal usa el mismo modal.
+    const name = await promptModal({
+      title: 'Guardar como plantilla',
+      label: tiles.length
+        ? `Se guardará la distribución de ${tiles.length} tile(s). Nombre de la plantilla:`
+        : 'Este workspace no tiene tiles: la plantilla quedará vacía. Nombre de la plantilla:',
+      placeholder: 'ej. Cuatro terminales + Discord',
+      confirmLabel: 'Guardar',
+    });
+    if (!name) { openWorkspaceManager(); return; }
+    const template = templateFromProfile(profile, { name });
+    const check = validateTemplate(template);
+    if (!check.ok) {
+      bus.emit('toast', { type: 'error', message: `No se pudo guardar la plantilla: ${check.error}` });
+      openWorkspaceManager();
+      return;
+    }
+    try {
+      await window.yusepe.templates.create(template);
+      bus.emit('toast', { type: 'success', message: `Plantilla "${name}" guardada. La verás al crear un workspace.` });
+    } catch (err) {
+      bus.emit('toast', { type: 'error', message: err?.message || String(err) });
+    }
+    openWorkspaceManager();
+  }
 
   render();
 
@@ -82,6 +122,7 @@ export function openWorkspaceManager() {
         h('th', { class: 'py-1.5 pr-2 font-medium w-40' }, 'Nombre'),
         h('th', { class: 'py-1.5 pr-2 font-medium w-16' }, 'Tamaño'),
         h('th', { class: 'py-1.5 pr-2 font-medium' }, 'Comando / URL'),
+        h('th', { class: 'py-1.5 pr-2 font-medium w-14' }, 'Barra'),
         h('th', { class: 'py-1.5 pr-2 font-medium w-36' }, 'Zoom'),
         h('th', { class: 'py-1.5 pr-2 font-medium w-10' }, ''),
       ]),
@@ -90,7 +131,7 @@ export function openWorkspaceManager() {
     const tbody = h('tbody', {});
     if (!tiles.length) {
       tbody.append(h('tr', {}, [
-        h('td', { colspan: '5', class: 'py-4 text-fg-subtle text-center' },
+        h('td', { colspan: '6', class: 'py-4 text-fg-subtle text-center' },
           'Este workspace no tiene tiles abiertos.'),
       ]));
     } else {
@@ -105,6 +146,7 @@ export function openWorkspaceManager() {
       h('td', { class: 'py-2 pr-2 whitespace-nowrap truncate' }, labelFor(tile)),
       h('td', { class: 'py-2 pr-2 whitespace-nowrap text-fg-subtle' }, `${tile.colSpan || 1}x${tile.rowSpan || 1}`),
       commandOrUrlCell(tile),
+      navCell(tile),
       zoomCell(tile),
       actionsCell(tile),
     );
@@ -187,6 +229,28 @@ export function openWorkspaceManager() {
     }
 
     td.append(h('span', { class: 'text-fg-subtle' }, '—'));
+    return td;
+  }
+
+  // Barra de navegación del webview (tile.nav). El cambio dispara
+  // tile:updated: el tile monta/desmonta la barra solo (webviewTile.js).
+  function navCell(tile) {
+    const td = h('td', { class: 'py-2 pr-2 whitespace-nowrap' });
+    if (tile.kind !== 'webview') {
+      td.append(h('span', { class: 'text-fg-subtle' }, '—'));
+      return td;
+    }
+    const on = tile.nav === true;
+    td.append(h('button', {
+      class: `text-[10px] px-1.5 py-1 rounded border transition ${on
+        ? 'border-accent text-accent'
+        : 'border-line text-fg-subtle hover:bg-bg-elev'}`,
+      title: on ? 'Ocultar la barra de navegación' : 'Mostrar la barra de navegación',
+      onClick: async () => {
+        await ProfileManager.updateTile(tile.id, { nav: !on });
+        render();
+      },
+    }, on ? 'Sí' : 'No'));
     return td;
   }
 

@@ -86,20 +86,37 @@ export function buildWallpaperSection() {
     }
   }
 
+  /**
+   * La foto se pide al CDN de Pexels a la medida REAL de la pantalla
+   * (resolución física: px CSS × devicePixelRatio). Las variantes fijas
+   * (`large2x` = 1880px) quedan cortas en pantallas 2K/4K y el `cover`
+   * las estira borrosas; el CDN redimensiona el original al ancho pedido
+   * (sin upscalear más allá del original) y sirve un archivo mucho más
+   * liviano que el original crudo.
+   */
+  function optimalUrl(photo) {
+    if (!photo.original) return photo.full;
+    const px = Math.ceil(window.screen.width * (window.devicePixelRatio || 1));
+    return `${photo.original}?auto=compress&cs=tinysrgb&w=${px}`;
+  }
+
   async function applyPexelsPhoto(photo) {
     await applyWallpaper({
-      url: photo.full,
+      url: optimalUrl(photo),
       photographerName: photo.photographerName,
       photographerUrl: photo.photographerUrl,
     });
   }
 
   async function applyWallpaper({ url, photographerName, photographerUrl }) {
+    // El spread conserva los ajustes de imagen (zoom/fit/encuadre/blur/
+    // dim/opacity) al cambiar de foto; sólo se pisan la URL y el crédito.
     const saved = await ProfileManager.setWallpaper(profile.id, {
+      ...(profile.wallpaper || {}),
+      opacity: profile.wallpaper?.opacity ?? 0.55,
       url,
       photographerName,
       photographerUrl,
-      opacity: profile.wallpaper?.opacity ?? 0.55,
     });
     profile.wallpaper = saved.wallpaper;
     renderCurrent();
@@ -128,18 +145,55 @@ export function buildWallpaperSection() {
       }, `Foto de ${wp.photographerName} en Pexels`));
     }
 
-    const opacityLabel = h('span', { class: 'text-xs text-fg-subtle' },
-      `Transparencia de terminales: ${Math.round(wp.opacity * 100)}%`);
-    const opacitySlider = h('input', {
-      type: 'range', min: '0.15', max: '1', step: '0.05', value: String(wp.opacity),
-      class: 'w-full accent-accent',
-    });
-    opacitySlider.addEventListener('input', debounce(async () => {
-      const opacity = Number(opacitySlider.value);
-      opacityLabel.textContent = `Transparencia de terminales: ${Math.round(opacity * 100)}%`;
-      const saved = await ProfileManager.setWallpaper(profile.id, { ...profile.wallpaper, opacity });
+    // --- Ajustes de imagen. Todos se guardan con merge sobre el objeto
+    // wallpaper y se aplican en vivo: setWallpaper emite
+    // profile:wallpaper-changed y bentoGrid re-aplica la capa. Cada
+    // control tiene su propio debounce para no pisarse entre sí.
+    async function savePatch(patch) {
+      const saved = await ProfileManager.setWallpaper(profile.id, { ...profile.wallpaper, ...patch });
       profile.wallpaper = saved.wallpaper;
-    }, 150));
+    }
+
+    function sliderRow(labelFor, { min, max, step, value, key }) {
+      const label = h('span', { class: 'text-xs text-fg-subtle' }, labelFor(value));
+      const slider = h('input', {
+        type: 'range', min: String(min), max: String(max), step: String(step), value: String(value),
+        class: 'w-full accent-accent',
+      });
+      const persist = debounce(() => savePatch({ [key]: Number(slider.value) }), 150);
+      slider.addEventListener('input', () => {
+        label.textContent = labelFor(Number(slider.value));
+        persist();
+      });
+      return h('div', { class: 'mt-1' }, [label, slider]);
+    }
+
+    const FITS = [['cover', 'Rellenar'], ['contain', 'Ajustar'], ['fill', 'Estirar']];
+    const currentFit = FITS.some(([v]) => v === wp.fit) ? wp.fit : 'cover';
+    const fitRow = h('div', { class: 'flex items-center gap-1.5 mt-2' }, [
+      h('span', { class: 'text-xs text-fg-subtle mr-1' }, 'Modo:'),
+      ...FITS.map(([val, lbl]) => h('button', {
+        class: 'text-xs px-2 py-1 rounded-md border transition '
+          + (val === currentFit ? 'border-accent text-accent' : 'border-line hover:bg-bg-elev'),
+        onClick: async () => { await savePatch({ fit: val }); renderCurrent(); },
+      }, lbl)),
+    ]);
+
+    const POSITIONS = [
+      'top left', 'top', 'top right',
+      'left', 'center', 'right',
+      'bottom left', 'bottom', 'bottom right',
+    ];
+    const currentPos = POSITIONS.includes(wp.position) ? wp.position : 'center';
+    const posGrid = h('div', { class: 'grid grid-cols-3 gap-1 w-16' }, POSITIONS.map((p) => h('button', {
+      title: `Encuadre: ${p}`,
+      class: 'h-4 rounded-sm border transition '
+        + (p === currentPos ? 'bg-accent border-accent' : 'border-line hover:bg-bg-elev'),
+      onClick: async () => { await savePatch({ position: p }); renderCurrent(); },
+    })));
+    const posRow = h('div', { class: 'flex items-center gap-2 mt-2' }, [
+      h('span', { class: 'text-xs text-fg-subtle' }, 'Encuadre:'), posGrid,
+    ]);
 
     const removeBtn = h('button', {
       class: 'text-xs px-2.5 py-1 rounded-md border border-line hover:bg-bg-elev transition mt-2',
@@ -150,6 +204,18 @@ export function buildWallpaperSection() {
       },
     }, 'Quitar fondo');
 
-    currentEl.append(h('div', { class: 'mt-2' }, [opacityLabel, opacitySlider]), removeBtn);
+    currentEl.append(
+      sliderRow((v) => `Transparencia de terminales: ${Math.round(v * 100)}%`,
+        { min: 0.15, max: 1, step: 0.05, value: wp.opacity ?? 0.55, key: 'opacity' }),
+      sliderRow((v) => `Zoom del fondo: ${Math.round(v * 100)}%`,
+        { min: 0.5, max: 2, step: 0.05, value: Number(wp.zoom) || 1, key: 'zoom' }),
+      sliderRow((v) => `Difuminado: ${v}px`,
+        { min: 0, max: 20, step: 1, value: Number(wp.blur) || 0, key: 'blur' }),
+      sliderRow((v) => `Oscurecer: ${Math.round(v * 100)}%`,
+        { min: 0, max: 0.7, step: 0.05, value: Number(wp.dim) || 0, key: 'dim' }),
+      fitRow,
+      posRow,
+      removeBtn,
+    );
   }
 }

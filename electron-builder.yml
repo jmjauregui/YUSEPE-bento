@@ -1,7 +1,7 @@
 appId: com.yusepe.bento
 productName: YUSEPE Bento
 directories:
-  output: release
+  output: dist
   buildResources: build
 
 files:
@@ -60,3 +60,15 @@ linux:
   category: Utility
 
 publish: null
+
+# Electron de castLabs (Electron for Content Security): el mismo Electron
+# más el CDM de Widevine, para que los webviews reproduzcan Netflix y
+# similares. Se instala desde github:castlabs/electron-releases (ver
+# package.json). Primero se intenta empaquetar la distribución ya
+# instalada; si electron-builder decide descargar (lo hace cuando la
+# versión lleva sufijo), que lo baje del espejo de castLabs y no del
+# oficial, donde esa versión no existe. Después de empaquetar hay que
+# firmar con VMP (servicio EVS de castLabs): `npm run vmp-sign`.
+electronDist: node_modules/electron/dist
+electronDownload:
+  mirror: https://github.com/castlabs/electron-releases/releases/download/v

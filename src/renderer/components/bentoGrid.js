@@ -2,7 +2,7 @@
  * src/renderer/components/bentoGrid.js
  * --------------------------------------------------------------
  * Bento Grid con posiciones manuales:
- *  - Grid de 12 columnas, filas auto (minmax 70px, 1fr).
+ *  - Grid de 48 columnas, filas auto (minmax 35px, 1fr).
  *  - Cada tile tiene col/row/colSpan/rowSpan explícitos.
  *  - Auto-placement para tiles nuevos (busca hueco libre).
  *  - Resize: arrastrar bordes (right, bottom, corner), con push/expand
@@ -19,9 +19,10 @@ import { renderTile } from './tile.js';
 import { ProfileManager } from '../core/profileManager.js';
 import { GRID_COLS, findEmptySpot, resolveColGrowth, resolveRowGrowth, moveTileTo, findNeighbor } from '../core/layout.js';
 import * as liveTiles from '../core/liveTiles.js';
+import { navEnabled } from '../core/browserNav.js';
 
 const GAP = 8;
-const MIN_ROW_PX = 70;
+const MIN_ROW_PX = 35;
 
 const grid = document.getElementById('bento');
 // Zona oculta (pero dentro del documento) donde "aparcamos" tiles vivos
@@ -80,8 +81,8 @@ function ensurePositions(tiles) {
 
   let changed = false;
   for (const tile of unpositioned) {
-    const cs = tile.colSpan || 4;
-    const rs = tile.rowSpan || 4;
+    const cs = tile.colSpan || 16;
+    const rs = tile.rowSpan || 8;
     const pos = findEmptySpot(cs, rs, occupied);
     tile.col = pos.col;
     tile.row = pos.row;
@@ -113,6 +114,9 @@ function focusTile(tileId) {
   document.querySelectorAll('.tile').forEach((el) => {
     el.classList.toggle('focused', el.dataset.tileId === tileId);
   });
+  // Los tiles que muestran «terminó de trabajar» lo limpian al recibir el
+  // foco (ver components/terminal.js · core/activityState.js).
+  bus.emit('tile:focused', { id: tileId });
 }
 
 // Los tiles webview notifican su foco vía bus (ver webviewTile.js),
@@ -255,20 +259,65 @@ wallpaperCredit.addEventListener('click', (e) => {
   if (wallpaperCredit.href) window.yusepe.shell.openExternal(wallpaperCredit.href);
 });
 
+// La imagen no se pinta en el grid sino en una capa propia detrás de los
+// tiles: así el zoom es un `transform: scale` sobre el encuadre, sin tocar
+// el layout. Tres sub-capas: el backdrop (la misma foto difuminada, que
+// llena el margen cuando la imagen achicada o en "ajustar" no cubre todo),
+// la imagen principal, y un velo negro regulable para el contraste. El
+// wrapper (overflow: hidden) recorta el desborde del scale.
+const wallpaperLayer = document.createElement('div');
+wallpaperLayer.className = 'wallpaper-layer';
+const wallpaperBackdrop = document.createElement('div');
+wallpaperBackdrop.className = 'wallpaper-layer-backdrop';
+const wallpaperImg = document.createElement('div');
+wallpaperImg.className = 'wallpaper-layer-img';
+const wallpaperDim = document.createElement('div');
+wallpaperDim.className = 'wallpaper-layer-dim';
+wallpaperLayer.append(wallpaperBackdrop, wallpaperImg, wallpaperDim);
+wallpaperLayer.style.display = 'none';
+grid.insertBefore(wallpaperLayer, grid.firstChild);
+
+// Los valores vienen del JSON del perfil, que se edita a mano: acá se
+// clampa/whitelistea todo lo que termina en un style inline.
+const WALLPAPER_POSITIONS = new Set([
+  'top left', 'top', 'top right',
+  'left', 'center', 'right',
+  'bottom left', 'bottom', 'bottom right',
+]);
+const clamp = (n, min, max, fallback) => {
+  const v = Number(n);
+  return Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback;
+};
+
 function applyWallpaper(profile) {
   const wp = profile?.wallpaper;
 
   if (wp) {
-    grid.style.backgroundImage = `url(${wp.url})`;
-    grid.style.backgroundSize = 'cover';
-    grid.style.backgroundPosition = 'center';
+    const zoom = clamp(wp.zoom, 0.5, 2, 1);
+    const blur = clamp(wp.blur, 0, 20, 0);
+    const dim = clamp(wp.dim, 0, 0.7, 0);
+    const size = wp.fit === 'contain' ? 'contain' : wp.fit === 'fill' ? '100% 100%' : 'cover';
+    const pos = WALLPAPER_POSITIONS.has(wp.position) ? wp.position : 'center';
+
+    wallpaperImg.style.backgroundImage = `url(${wp.url})`;
+    wallpaperImg.style.backgroundSize = size;
+    wallpaperImg.style.backgroundPosition = pos;
+    // El zoom crece/achica hacia el encuadre elegido, no siempre al centro.
+    wallpaperImg.style.transformOrigin = pos;
+    wallpaperImg.style.transform = `scale(${zoom})`;
+    wallpaperImg.style.filter = blur > 0 ? `blur(${blur}px)` : '';
+    wallpaperBackdrop.style.backgroundImage = `url(${wp.url})`;
+    wallpaperDim.style.opacity = String(dim);
+    wallpaperLayer.style.display = '';
     emptyBackdrop.style.display = 'none';
     document.documentElement.style.setProperty('--term-tile-opacity', String(wp.opacity ?? 0.55));
     wallpaperCredit.href = wp.photographerUrl;
     wallpaperCredit.textContent = `Foto de ${wp.photographerName} en Pexels`;
     wallpaperCredit.classList.remove('hidden');
   } else {
-    grid.style.backgroundImage = '';
+    wallpaperImg.style.backgroundImage = '';
+    wallpaperBackdrop.style.backgroundImage = '';
+    wallpaperLayer.style.display = 'none';
     emptyBackdrop.style.display = '';
     document.documentElement.style.setProperty('--term-tile-opacity', '1');
     wallpaperCredit.classList.add('hidden');
@@ -448,10 +497,24 @@ function startMove(e, tileId) {
   e.preventDefault();
 
   beginDrag();
+  renderedTiles.get(tileId)?.node?.classList.add('is-moving');
+
+  // Foto del layout al empezar el drag. Cada mousemove parte SIEMPRE de
+  // acá: sin esto, pasar el mouse por encima de un tile lo desplazaba una
+  // vez por cada celda recorrida, los corrimientos se acumulaban y el
+  // pobre terminaba "muy abajo". Con la foto, lo que se ve durante el
+  // arrastre es la previsualización exacta de lo que queda al soltar.
+  const tiles = state.profile?.tiles || [];
+  const snapshot = tiles.map((t) => ({ tile: t, col: t.col || 1, row: t.row || 1 }));
+  let lastCol = null;
+  let lastRow = null;
 
   function onMove(ev) {
     const { col, row } = cellAtPoint(ev.clientX, ev.clientY);
-    const tiles = state.profile?.tiles || [];
+    if (col === lastCol && row === lastRow) return;
+    lastCol = col;
+    lastRow = row;
+    for (const s of snapshot) { s.tile.col = s.col; s.tile.row = s.row; }
     moveTileTo(tiles, tileId, col, row);
     for (const t of tiles) updateTilePosition(t.id);
   }
@@ -460,6 +523,7 @@ function startMove(e, tileId) {
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseup', onUp);
     endDrag();
+    renderedTiles.get(tileId)?.node?.classList.remove('is-moving');
     ProfileManager.saveCurrent().catch((err) => console.error('[bento] move save:', err));
   }
 
@@ -564,6 +628,18 @@ export async function renderBento() {
   }
 
   bus.emit('bento:rendered', { count: tiles.length });
+}
+
+/**
+ * Cmd+L (menú Tile › Barra de dirección): sobre un webview enfocado,
+ * enciende su barra de navegación si estaba apagada y pone el cursor en
+ * la dirección, como en un navegador.
+ */
+export async function toggleAddressBar() {
+  const tile = state.profile?.tiles?.find((t) => t.id === focusedTileId);
+  if (!tile || tile.kind !== 'webview') return;
+  if (!navEnabled(tile)) await ProfileManager.updateTile(tile.id, { nav: true });
+  liveTiles.get(tile.id)?.meta?.focusAddress?.();
 }
 
 export async function closeFocusedTile() {
