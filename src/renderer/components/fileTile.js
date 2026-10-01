@@ -64,6 +64,22 @@ export function createFileTile(tile) {
     h('div', { class: 'flex flex-col h-full' }, [header, body]),
   ]);
 
+  // La vigilancia sólo se puede armar sobre una carpeta que ya existe, y no
+  // la creamos sólo por mirar — mismo patrón que tasksTile.js.
+  let watching = false;
+  let watchPending = false;
+  async function ensureWatching(root) {
+    if (watching || watchPending) return;
+    watchPending = true;
+    try {
+      watching = await window.yusepe.explorer.watch(root, tile.relPath);
+    } catch {
+      /* si no se puede vigilar, queda el botón de recargar a mano */
+    } finally {
+      watchPending = false;
+    }
+  }
+
   async function load() {
     const root = state.profile?.cwd;
     if (!root) {
@@ -76,6 +92,7 @@ export function createFileTile(tile) {
     // los carga hasta que realmente hay un archivo que mostrar.
     const { mountFileView } = await import('./fileViewer.js');
     await mountFileView(body, entry, { root, maxHeight: 'max-h-full' });
+    ensureWatching(root);
   }
 
   load();
@@ -85,5 +102,19 @@ export function createFileTile(tile) {
     if (payload?.relPath === tile.relPath) load();
   });
 
-  return { root: el, shutdown: () => offChanged() };
+  // El archivo cambió por fuera de Bento (agente, editor externo, git) —
+  // los MD/HTML fijados se usan de forma informativa y no vale la pena
+  // pedirle al usuario que los refresque a mano cada vez.
+  const offDisk = window.yusepe.explorer.onChangedOnDisk(({ root, relPath }) => {
+    if (root === state.profile?.cwd && relPath === tile.relPath) load();
+  });
+
+  return {
+    root: el,
+    shutdown: () => {
+      offChanged();
+      offDisk();
+      if (watching) window.yusepe.explorer.unwatch(state.profile?.cwd, tile.relPath);
+    },
+  };
 }
