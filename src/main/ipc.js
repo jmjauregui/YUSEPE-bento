@@ -12,7 +12,7 @@ import { statSync } from 'fs';
 import { join, resolve } from 'path';
 import { ProfileStorage } from './storage.js';
 import { detectTools } from './toolDetector.js';
-import { createEntry, duplicateEntry, listDir, readFilePreview, readMediaBytes, renameEntry, resolveEntryPath, resolvePath, searchFiles, writeFile } from './explorerFs.js';
+import { createEntry, duplicateEntry, listDir, readFilePreview, readMediaBytes, renameEntry, resolveEntryPath, resolvePath, searchFiles, watchFile, writeFile } from './explorerFs.js';
 import * as gitOps from './gitOps.js';
 import * as agentOps from './agentOps.js';
 import * as tasksOps from './tasksOps.js';
@@ -129,6 +129,56 @@ export function registerIpc({ app, profilesDir, broadcast = () => {} }) {
   // renderer no tenga que saber armar rutas del sistema.
   ipcMain.handle('explorer:abs-path', (_e, { root, relPath }) =>
     resolvePath(root || app.getPath('home'), relPath));
+
+  // Vigilancia de un archivo puntual (tile fijado, modal): mismo patrón que
+  // tasks:watch — un watcher por (ventana, root+relPath), refcounted porque
+  // el modal y el tile pueden mirar el mismo archivo a la vez, y debounced
+  // porque un guardado dispara varios eventos.
+  const fileWatchers = new Map();
+  const fileWatcherKey = (sender, root, relPath) => `${sender.id}::${resolve(root)}::${relPath}`;
+
+  function stopFileWatcher(key) {
+    const entry = fileWatchers.get(key);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    entry.close();
+    fileWatchers.delete(key);
+  }
+
+  ipcMain.handle('explorer:watch', (event, { root, relPath }) => {
+    if (!root || !relPath) return false;
+    const key = fileWatcherKey(event.sender, root, relPath);
+
+    const existing = fileWatchers.get(key);
+    if (existing) {
+      existing.refs++;
+      return true;
+    }
+
+    const entry = { timer: null, close: () => {}, refs: 1 };
+    const close = watchFile(root, relPath, () => {
+      clearTimeout(entry.timer);
+      entry.timer = setTimeout(() => {
+        if (!event.sender.isDestroyed()) event.sender.send('explorer:changed-on-disk', { root, relPath });
+      }, 120);
+    });
+    if (!close) return false;
+
+    entry.close = close;
+    fileWatchers.set(key, entry);
+    event.sender.once('destroyed', () => stopFileWatcher(key));
+    return true;
+  });
+
+  ipcMain.handle('explorer:unwatch', (event, { root, relPath }) => {
+    if (!root || !relPath) return true;
+    const key = fileWatcherKey(event.sender, root, relPath);
+    const entry = fileWatchers.get(key);
+    if (!entry) return true;
+    entry.refs--;
+    if (entry.refs <= 0) stopFileWatcher(key);
+    return true;
+  });
 
   // -------- Clipboard --------
   ipcMain.handle('clipboard:write-text', (_e, { text }) => clipboard.writeText(String(text ?? '')));
@@ -487,6 +537,8 @@ export function registerIpc({ app, profilesDir, broadcast = () => {} }) {
     ipcMain.removeHandler('explorer:trash');
     ipcMain.removeHandler('explorer:reveal');
     ipcMain.removeHandler('explorer:abs-path');
+    ipcMain.removeHandler('explorer:watch');
+    ipcMain.removeHandler('explorer:unwatch');
     ipcMain.removeHandler('clipboard:write-text');
     ipcMain.removeHandler('menu:popup');
     ipcMain.removeHandler('git:status');
@@ -517,6 +569,7 @@ export function registerIpc({ app, profilesDir, broadcast = () => {} }) {
     ipcMain.removeHandler('tasks:watch');
     ipcMain.removeHandler('tasks:unwatch');
     for (const key of [...taskWatchers.keys()]) stopTaskWatcher(key);
+    for (const key of [...fileWatchers.keys()]) stopFileWatcher(key);
     ipcMain.removeHandler('profiles:set-wallpaper');
     ipcMain.removeHandler('pexels:search');
     ipcMain.removeHandler('snippets:list');

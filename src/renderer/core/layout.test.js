@@ -9,6 +9,7 @@ import {
   moveTileTo,
   findNeighbor,
   GRID_COLS,
+  autoArrange,
 } from './layout.js';
 
 describe('GRID_COLS', () => {
@@ -341,5 +342,67 @@ describe('findNeighbor', () => {
 
   it('tileId inexistente devuelve null', () => {
     expect(findNeighbor(grid, 'nope', 'right')).toBeNull();
+  });
+});
+
+describe('autoArrange (035)', () => {
+  const make = (n) => Array.from({ length: n }, (_, i) => ({ id: `t${i}`, col: 1, row: i * 5 + 1, colSpan: 10, rowSpan: 56 }));
+  const bands = (tiles) => [...new Set(tiles.map((t) => t.row))].map((r) => tiles.filter((t) => t.row === r).length);
+
+  /** Sin solapes, sin huecos y todo dentro de rows × cols. */
+  function expectFills(tiles, rows, cols = GRID_COLS) {
+    const seen = new Set();
+    for (const t of tiles) {
+      expect(t.col + t.colSpan - 1).toBeLessThanOrEqual(cols);
+      expect(t.row + t.rowSpan - 1).toBeLessThanOrEqual(rows);
+      for (let r = t.row; r < t.row + t.rowSpan; r++) {
+        for (let c = t.col; c < t.col + t.colSpan; c++) {
+          const k = `${c},${r}`;
+          expect(seen.has(k)).toBe(false);
+          seen.add(k);
+        }
+      }
+    }
+    expect(seen.size).toBe(rows * cols);
+  }
+
+  it.each([
+    [1, [1]], [2, [2]], [3, [3]], [4, [2, 2]], [5, [3, 2]], [8, [4, 4]],
+  ])('%i tiles en pantalla 16:9 → bandas %j', (n, expected) => {
+    const tiles = make(n);
+    autoArrange(tiles, { rows: 20, aspect: 16 / 9 });
+    expect(bands(tiles)).toEqual(expected);
+    expectFills(tiles, 20);
+  });
+
+  it('rescata tiles más altos que la pantalla (CORPUSIA, rowSpan 56)', () => {
+    const tiles = [
+      { id: 'a', col: 1, row: 1, colSpan: 19, rowSpan: 56 },
+      { id: 'b', col: 30, row: 1, colSpan: 13, rowSpan: 56 },
+    ];
+    autoArrange(tiles, { rows: 20, aspect: 1.8 });
+    expect(tiles.map((t) => t.rowSpan)).toEqual([20, 20]);
+    expectFills(tiles, 20);
+  });
+
+  it('mantiene el orden de lectura', () => {
+    const tiles = [
+      { id: 'abajo', col: 1, row: 10, colSpan: 5, rowSpan: 5 },
+      { id: 'der', col: 20, row: 1, colSpan: 5, rowSpan: 5 },
+      { id: 'izq', col: 1, row: 1, colSpan: 5, rowSpan: 5 },
+    ];
+    autoArrange(tiles, { rows: 20, aspect: 16 / 9 });
+    const byPos = [...tiles].sort((a, b) => a.col - b.col).map((t) => t.id);
+    expect(byPos).toEqual(['izq', 'der', 'abajo']);
+  });
+
+  it('pantalla muy baja: al menos una fila por banda, sin solapes', () => {
+    const tiles = make(8);
+    autoArrange(tiles, { rows: 1, aspect: 1 });
+    expectFills(tiles, Math.max(...tiles.map((t) => t.row + t.rowSpan - 1)));
+  });
+
+  it('sin tiles no hace nada', () => {
+    expect(autoArrange([], { rows: 20 })).toEqual([]);
   });
 });

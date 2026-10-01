@@ -7,7 +7,7 @@
  * traversal vía `..`) — la lectura queda acotada al árbol del workspace.
  * --------------------------------------------------------------
  */
-import { promises as fs } from 'fs';
+import { promises as fs, watch } from 'fs';
 import path from 'path';
 
 const MAX_PREVIEW_BYTES = 1_000_000;
@@ -285,4 +285,37 @@ export async function writeFile(root, relPath, content) {
   await fs.writeFile(tmp, content, 'utf8');
   await fs.rename(tmp, file);
   return { size: Buffer.byteLength(content, 'utf8') };
+}
+
+/**
+ * Vigila un archivo puntual (tile fijado): un agente/editor externo lo
+ * puede tocar en cualquier momento y el tile queda mostrando algo viejo
+ * hasta que alguien lo recarga a mano.
+ *
+ * Se vigila la carpeta contenedora, no el archivo — mismo motivo que
+ * `tasksOps.watchTasks`: un guardado atómico (tmp + rename, lo que hace
+ * `writeFile` de acá arriba) cambia de inode, y `fs.watch` sobre el
+ * archivo mismo pierde la referencia después del primer guardado externo.
+ *
+ * Devuelve una función para cortar la vigilancia, o `null` si la carpeta
+ * todavía no existe.
+ */
+export function watchFile(root, relPath, onChange) {
+  const file = resolveSafe(root, relPath);
+  const dir = path.dirname(file);
+  const base = path.basename(file);
+
+  let watcher;
+  try {
+    watcher = watch(dir, { persistent: false }, (_event, filename) => {
+      if (filename && filename !== base) return;
+      onChange();
+    });
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+  watcher.on('error', () => watcher.close());
+
+  return () => watcher.close();
 }

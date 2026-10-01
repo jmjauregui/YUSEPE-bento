@@ -17,7 +17,8 @@ import { bus } from '../core/eventBus.js';
 import { state } from '../core/state.js';
 import { renderTile } from './tile.js';
 import { ProfileManager } from '../core/profileManager.js';
-import { GRID_COLS, findEmptySpot, resolveColGrowth, resolveRowGrowth, moveTileTo, findNeighbor } from '../core/layout.js';
+import { GRID_COLS, findEmptySpot, resolveColGrowth, resolveRowGrowth, moveTileTo, findNeighbor, autoArrange } from '../core/layout.js';
+import { TEMPLATE_ROWS } from '../core/layoutTemplates.js';
 import * as liveTiles from '../core/liveTiles.js';
 import { navEnabled } from '../core/browserNav.js';
 
@@ -179,6 +180,29 @@ export function moveFocusedTile(dir) {
   moveTileTo(tiles, focusedTileId, newCol, newRow);
   for (const t of tiles) updateTilePosition(t.id);
   ProfileManager.saveCurrent().catch((err) => console.error('[bento] kbd move save:', err));
+}
+
+/**
+ * Reparte todos los tiles en una grilla pareja que entra en pantalla (spec
+ * 035). Mismo camino que moveFocusedTile: muta, reposiciona y guarda, sin
+ * re-render — las terminales y webviews siguen vivas.
+ *
+ * Filas: las que entran en el alto visible con el mínimo de MIN_ROW_PX, con
+ * tope TEMPLATE_ROWS (la altura de referencia de las plantillas). Como las
+ * filas son `1fr`, menos filas que las que entran se estiran hasta llenar.
+ */
+export function autoArrangeTiles() {
+  const tiles = state.profile?.tiles || [];
+  if (!tiles.length) return false;
+  const rect = grid.getBoundingClientRect();
+  const fit = Math.floor((rect.height + GAP) / (MIN_ROW_PX + GAP)) || TEMPLATE_ROWS;
+  autoArrange(tiles, {
+    rows: Math.min(TEMPLATE_ROWS, fit),
+    aspect: rect.width && rect.height ? rect.width / rect.height : 16 / 9,
+  });
+  for (const t of tiles) updateTilePosition(t.id);
+  ProfileManager.saveCurrent().catch((err) => console.error('[bento] auto-arrange save:', err));
+  return true;
 }
 
 /* ===================== Marca de agua de espacio libre ===================== */
