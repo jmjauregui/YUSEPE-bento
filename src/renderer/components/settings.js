@@ -12,6 +12,9 @@ import { getTheme, applyTheme } from '../core/theme.js';
 import { buildWallpaperSection } from './wallpaperPicker.js';
 import { SOUNDS, getSound, setSound, playSound } from '../core/loopNotify.js';
 import { getLoopMode, setLoopMode, getLoopOpenView, setLoopOpenView } from './loopSidebar.js';
+import { OBSERVER_KEY, OBSERVER_DEFAULT_MS, setObserverThreshold } from '../core/observerSettings.js';
+import { getPanelPosition, setPanelPosition } from '../core/panelPosition.js';
+import { bus } from '../core/eventBus.js';
 import { autoArrangeTiles } from './bentoGrid.js';
 import { state } from '../core/state.js';
 import { toast } from './toast.js';
@@ -102,6 +105,41 @@ export function openSettings() {
     return row('Sonido de aviso', 'Cuando un agente te escribe a vos en el loop.', [control, preview]);
   }
 
+  function observerRow() {
+    const OPTIONS = [
+      ['null', 'Desactivado'],
+      ['300', '5 minutos'],
+      [String(OBSERVER_DEFAULT_MS / 1000), `${OBSERVER_DEFAULT_MS / 60_000} minutos (predeterminado)`],
+      ['900', '15 minutos'],
+      ['1800', '30 minutos'],
+      ['3600', '60 minutos'],
+    ];
+
+    const getVal = () => {
+      const v = localStorage.getItem(OBSERVER_KEY);
+      if (v === 'null') return 'null';
+      const n = parseInt(v, 10);
+      return (Number.isFinite(n) && n > 0) ? String(n) : String(OBSERVER_DEFAULT_MS / 1000);
+    };
+
+    const control = select(OPTIONS, getVal(), (val) => {
+      setObserverThreshold(val === 'null' ? null : parseInt(val, 10));
+    });
+
+    return row('Observador del loop',
+      'Avisa si el loop lleva este tiempo sin actividad visible en alguna terminal.',
+      [control]);
+  }
+
+  function positionRow() {
+    const control = select(
+      [['right', 'Derecha (predeterminado)'], ['left', 'Izquierda'], ['top', 'Arriba'], ['bottom', 'Abajo']],
+      getPanelPosition(),
+      (pos) => { setPanelPosition(pos); bus.emit('loop:position-changed', pos); },
+    );
+    return row('Posición del panel del loop', null, [control]);
+  }
+
   // Reordenar (spec 035): en "Este espacio", arriba del fondo para que se
   // vea sin scrollear.
   function arrangeRow() {
@@ -120,7 +158,7 @@ export function openSettings() {
   }
 
   const body = h('div', {}, [
-    group('General', [themeRow, loopModeRow(), openViewRow(), soundRow()]),
+    group('General', [themeRow, loopModeRow(), positionRow(), openViewRow(), soundRow(), observerRow()]),
     state.profile
       ? group('Este espacio', [
         arrangeRow(),

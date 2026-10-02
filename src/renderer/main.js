@@ -41,6 +41,7 @@ const bento = $('#bento');
 const backBtn = $('#btn-back-profiles');
 const workspaceTabsEl = $('#workspace-tabs');
 
+// Cada id necesita su `data-label` en index.html para mostrar el tooltip con workspace abierto.
 const ADD_BTN_IDS = ['btn-add-to-space', 'btn-toggle-explorer', 'btn-git', 'btn-agents', 'btn-workspace-manager', 'btn-toggle-snippets', 'btn-toggle-loop'];
 
 /** Abre el picker nativo de carpeta. Devuelve la ruta o null si se canceló. */
@@ -70,7 +71,14 @@ function updateAddButtonsState() {
     const btn = document.getElementById(id);
     if (!btn) continue;
     btn.disabled = !hasProfile;
-    btn.title = hasProfile ? '' : 'Crea un workspace primero';
+    if (!hasProfile) {
+      btn.title = 'Crea un workspace primero';
+    } else if (btn.dataset.label) {
+      btn.title = btn.dataset.label;
+    } else {
+      btn.removeAttribute('title');
+      delete btn.dataset.tip;
+    }
   }
 }
 

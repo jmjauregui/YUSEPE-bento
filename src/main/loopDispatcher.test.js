@@ -343,6 +343,48 @@ describe('presencia del agente', () => {
       expect(d.presence(cwd).claudio.present).toBe(false);
     } finally { await d.dispose(); }
   });
+
+  it('presenceSnapshot incluye lastDataAt y preserva present/foreground (el cable)', async () => {
+    const w = makeWriter();
+    const d = createDispatcher({
+      writeToPty: w.write,
+      probePty: () => ({ process: 'claude', shell: '/bin/zsh' }),
+      lastDataAt: () => 12345,
+      submitDelayMs: 0,
+      pollMs: 60_000,
+      watchFs: false,
+    });
+    d.start(cwd);
+    d.bind('claudio', 'pty_claudio', cwd);
+    try {
+      await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'ping' });
+      await d.tick();
+      const snap = d.presence(cwd);
+      expect(snap.claudio.lastDataAt).toBe(12345);
+      expect(snap.claudio.present).toBe(true);
+      expect(snap.claudio.foreground).toBe('claude');
+    } finally { await d.dispose(); }
+  });
+
+  it('agente bindeado sin salida → snapshot sin campo lastDataAt (no null)', async () => {
+    const w = makeWriter();
+    const d = createDispatcher({
+      writeToPty: w.write,
+      probePty: () => ({ process: 'claude', shell: '/bin/zsh' }),
+      lastDataAt: () => null,
+      submitDelayMs: 0,
+      pollMs: 60_000,
+      watchFs: false,
+    });
+    d.start(cwd);
+    d.bind('claudio', 'pty_claudio', cwd);
+    try {
+      await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'ping' });
+      await d.tick();
+      const snap = d.presence(cwd);
+      expect('lastDataAt' in snap.claudio).toBe(false);
+    } finally { await d.dispose(); }
+  });
 });
 
 describe('ciclo de vida', () => {

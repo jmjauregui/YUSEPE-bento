@@ -130,8 +130,8 @@ contextBridge.exposeInMainWorld('yusepe', {
     setState: (cwd, name, state) => ipcRenderer.invoke('loop:set-state', { cwd, name, state }),
 
     messages: (cwd, opts = {}) => ipcRenderer.invoke('loop:messages', { cwd, ...opts }),
-    // Objeto entero, como register: main toma y valida sólo lo que conoce.
-    post: (cwd, msg = {}) => ipcRenderer.invoke('loop:post', { ...msg, cwd }),
+    post: (cwd, { from, to, text, replyTo, seenUpTo }) =>
+      ipcRenderer.invoke('loop:post', { cwd, from, to, text, replyTo, seenUpTo }),
     inbox: (cwd, name) => ipcRenderer.invoke('loop:inbox', { cwd, name }),
 
     skill: (cwd) => ipcRenderer.invoke('loop:skill', { cwd }),
@@ -154,6 +154,14 @@ contextBridge.exposeInMainWorld('yusepe', {
     onDelivered: (handler) => on('loop:delivered', handler),
     onChanged: (handler) => on('loop:changed', handler),
     onPresence: (handler) => on('loop:presence', handler),
+
+    getOrder: (cwd) => ipcRenderer.invoke('loop:order-get', { cwd }),
+    setOrder: (cwd, names) => ipcRenderer.invoke('loop:order-set', { cwd, names }),
+
+    // 036: observador de inactividad
+    setObserver: (thresholdMs) => ipcRenderer.invoke('loop:set-observer', { thresholdMs }),
+    getObserverAgent: (cwd) => ipcRenderer.invoke('loop:get-observer-agent', { cwd }),
+    setObserverAgent: (cwd, name) => ipcRenderer.invoke('loop:set-observer-agent', { cwd, name }),
   },
 
   snippets: {

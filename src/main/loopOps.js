@@ -185,6 +185,9 @@ const safeEmoji = (value) => {
  */
 export async function registerAgent(cwd, { name, role = '', tileId = null, color = null, emoji } = {}) {
   const id = normalizeName(name);
+  if (id === 'bento') {
+    throw new Error('"@bento" es un nombre reservado por Bento. Usá otro nombre para tu agente.');
+  }
   return updateStatus(cwd, (status) => {
     const prev = status.agents[id] || {};
     status.agents[id] = {
@@ -299,10 +302,27 @@ export async function readDirty(cwd) {
 }
 
 /**
+ * Resuelve el `seenUpTo` para mensajes del usuario.
+ *
+ * - Id válido (existe en `all`) → ese mismo id.
+ * - Ausente, no-string o inexistente → null (sin aviso de cruce).
+ * - Archivo vacío → null.
+ *
+ * Decisión 044-F: devuelve null para ids inválidos, no el último id.
+ * Un null aquí no produce la lista completa en crossedMessages porque
+ * la guarda `if (message.from === 'usuario' && !message.seenUpTo) return []`
+ * corta antes.
+ */
+export function resolveUserSeenUpTo(all, requested) {
+  if (typeof requested === 'string' && all.some((m) => m.id === requested)) return requested;
+  return null;
+}
+
+/**
  * Postea un mensaje. `from` puede ser un agente o `usuario` (el humano
  * escribiendo desde el panel lateral).
  */
-export async function postMessage(cwd, { from, to, text, replyTo = null, seenUpTo: seenByUser = null } = {}) {
+export async function postMessage(cwd, { from, to, text, replyTo = null, seenUpTo: seenUpToParam } = {}) {
   const body = String(text ?? '').trim();
   if (!body) throw new Error('El mensaje no puede estar vacío');
 
@@ -312,15 +332,15 @@ export async function postMessage(cwd, { from, to, text, replyTo = null, seenUpT
   // Con esto se detectan los cruces: si A responde algo que fue escrito
   // antes de recibir el último mensaje de B, los dos hablaron a la vez y
   // ninguno de los dos se entera mirando sólo el texto.
-  //
-  // El agente tiene cursor en status.json. El humano no: lee el hilo en el
-  // panel. Para él, "hasta dónde leyó" es el último mensaje que tenía en
-  // pantalla al enviar, y lo manda el panel. Sin esto sus mensajes salían
-  // todos con seenUpTo null (87 de 87, medido en campo) y no había forma de
-  // saber si escribió viendo lo último de los agentes.
-  const seenUpTo = sender === 'usuario'
-    ? (typeof seenByUser === 'string' && /^[\w-]{1,64}$/.test(seenByUser) ? seenByUser : null)
-    : (await getAgent(cwd, sender))?.cursor ?? null;
+  // Para el usuario, se valida el id que manda la cabina contra el archivo.
+  // Para un agente, sigue siendo su cursor (el parámetro se ignora).
+  let seenUpTo;
+  if (sender === 'usuario') {
+    const all = await listMessages(cwd);
+    seenUpTo = resolveUserSeenUpTo(all, seenUpToParam);
+  } else {
+    seenUpTo = (await getAgent(cwd, sender))?.cursor ?? null;
+  }
 
   const message = {
     id: makeId(),
@@ -395,13 +415,12 @@ export async function findMessage(cwd, ref) {
 }
 
 /**
- * Mensajes que el autor de `message` todavía no había recibido cuando lo
- * escribió — o sea, los que se cruzaron en el camino.
+ * Mensajes que "se cruzaron en el camino": los que el destinatario de
+ * `message` le mandó al autor, y que el autor no había visto cuando escribió.
+ * Es decir, los dos se escribieron a la vez.
  *
- * Pasa de verdad y es invisible: dos agentes deciden lo mismo a la vez, o
- * uno responde una pregunta que el otro ya había contestado. Mirando sólo
- * el texto no hay forma de darse cuenta; comparando contra hasta dónde
- * había leído cada uno, sí.
+ * "Del destinatario" es clave: un mensaje de un tercero no es un cruce del
+ * par, aunque llegara antes. El filtro `m.from === message.to` lo garantiza.
  *
  * @param {object[]} all todos los mensajes, en orden (con su `seq`)
  */
@@ -667,6 +686,8 @@ export async function ensureSkill(cwd) {
  * agente ve el mensaje entrecomillado, que es un precio ridículo al lado
  * de ejecución arbitraria de comandos.
  */
+const CROSSED_SHOWN = 5;
+
 export function formatForTerminal(message, {
   skillPath = SKILL_FILE, crossed = [], head = null,
 } = {}) {
@@ -693,10 +714,17 @@ export function formatForTerminal(message, {
   // Si se cruzaron, decirlo acá es lo único que lo hace evidente a tiempo:
   // el que recibe puede reconciliar antes de contestar, en vez de descubrir
   // el desencuentro tres mensajes después.
+  // Tope: los CROSSED_SHOWN más recientes + "(y K anteriores)" para que el
+  // aviso no infle el mensaje aunque algo vuelva a producir una lista enorme.
   if (crossed.length) {
+    const hidden = crossed.length - CROSSED_SHOWN;
+    const shown = hidden > 0 ? crossed.slice(-CROSSED_SHOWN) : crossed;
+    const suffix = hidden > 0
+      ? ` (y ${hidden} ${hidden === 1 ? 'anterior' : 'anteriores'})`
+      : '';
     notes.push(`lo escribió sin haber visto ${crossed.length === 1
-      ? `tu mensaje #${crossed[0].seq}`
-      : `tus mensajes ${crossed.map((m) => `#${m.seq}`).join(', ')}`}`);
+      ? `tu mensaje #${shown[0].seq}`
+      : `tus mensajes ${shown.map((m) => `#${m.seq}`).join(', ')}${suffix}`}`);
   }
 
   // Desfase de código: el mensaje describe el árbol como estaba en ese
@@ -761,4 +789,48 @@ export function watchLoop(cwd, onChange) {
   watcher.on('error', () => watcher.close());
 
   return () => watcher.close();
+}
+
+/* ---------- Lectura eficiente del último mensaje ---------- */
+
+const READ_TAIL_BYTES = 64 * 1024;
+
+/**
+ * Lee el último mensaje del hilo sin leer el archivo entero.
+ *
+ * Lee los últimos 64 KB: suficiente para la línea más larga observada en campo.
+ * Si la última línea no entra ahí (mensaje enorme), cae a `listMessages`.
+ */
+export async function readLastMessage(cwd) {
+  const file = resolveSafe(cwd, MESSAGES_FILE);
+  let chunk;
+  try {
+    const fh = await fs.open(file, 'r');
+    try {
+      const { size } = await fh.stat();
+      if (size === 0) return null;
+      const toRead = Math.min(size, READ_TAIL_BYTES);
+      const buf = Buffer.alloc(toRead);
+      const { bytesRead } = await fh.read(buf, 0, toRead, size - toRead);
+      chunk = buf.slice(0, bytesRead).toString('utf8');
+    } finally {
+      await fh.close();
+    }
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+
+  const trimmed = chunk.trimEnd();
+  const lastNl = trimmed.lastIndexOf('\n');
+  const lastLine = lastNl === -1 ? trimmed : trimmed.slice(lastNl + 1);
+
+  try {
+    const msg = JSON.parse(lastLine);
+    if (msg && msg.id && msg.to) return msg;
+  } catch { /* línea incompleta: cae a fallback */ }
+
+  // Fallback: el chunk empezó en medio de una línea larga
+  const all = await listMessages(cwd);
+  return all.length ? all[all.length - 1] : null;
 }

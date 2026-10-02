@@ -22,8 +22,8 @@ import { promisify } from 'util';
 import {
   crossedMessages, DEFAULT_SKILL, ensureSkill, findMessage, formatForTerminal, getAgent, inbox, inboxSummary,
   listAgents, listMessages, LOOP_DIR, markDelivered, MESSAGES_FILE, normalizeName,
-  pendingDeliveries, postMessage, readHead, registerAgent, readSkill, setAgentState,
-  SKILL_FILE, STATUS_FILE, unregisterAgent, writeSkill,
+  pendingDeliveries, postMessage, readHead, registerAgent, readSkill, resolveUserSeenUpTo,
+  setAgentState, SKILL_FILE, STATUS_FILE, unregisterAgent, writeSkill,
 } from './loopOps.js';
 
 const run = promisify(execFile);
@@ -147,6 +147,12 @@ describe('registro de agentes', () => {
     expect(await listAgents(cwd)).toEqual([]); // se degrada, no explota
     const agent = await registerAgent(cwd, { name: 'claudio', role: 'codifica' });
     expect(agent.name).toBe('claudio'); // y se reconstruye
+  });
+
+  it('registerAgent("bento") lanza con mensaje que dice qué hacer', async () => {
+    await expect(
+      registerAgent(cwd, { name: 'bento', role: 'test' }),
+    ).rejects.toThrow(/reservado/);
   });
 });
 
@@ -771,5 +777,192 @@ describe('seguridad', () => {
     } finally {
       await fs.rm(otro, { recursive: true, force: true });
     }
+  });
+});
+
+// ─── 029 ───────────────────────────────────────────────────────────────────
+
+describe('resolveUserSeenUpTo', () => {
+  it('id válido: devuelve ese mismo id', () => {
+    const all = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+    expect(resolveUserSeenUpTo(all, 'b')).toBe('b');
+  });
+
+  // Decisión 044-F: id inválido → null, no el último id del archivo.
+  // Con null, la guarda `if (from==='usuario' && !seenUpTo) return []` en
+  // crossedMessages evita la lista completa — es la red de seguridad real.
+  // El contrato anterior (devolver el último id) era redundante y frágil:
+  // asumía que el usuario "estaba al día" cuando no había cursor, ocultando
+  // cruces potenciales.
+  it('id inexistente: devuelve null (decisión 044-F)', () => {
+    const all = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+    expect(resolveUserSeenUpTo(all, 'no-existe')).toBeNull();
+  });
+
+  it('no-string (número, objeto): devuelve null (decisión 044-F)', () => {
+    const all = [{ id: 'a' }, { id: 'b' }];
+    expect(resolveUserSeenUpTo(all, 42)).toBeNull();
+    expect(resolveUserSeenUpTo(all, null)).toBeNull();
+    expect(resolveUserSeenUpTo(all, {})).toBeNull();
+  });
+
+  it('archivo vacío: devuelve null (nada que acusar)', () => {
+    expect(resolveUserSeenUpTo([], 'cualquiera')).toBeNull();
+    expect(resolveUserSeenUpTo([], null)).toBeNull();
+  });
+});
+
+describe('seenUpTo del usuario (criterios C1-C3)', () => {
+  it('[discrimina] seenUpTo válido se persiste en messages.jsonl', async () => {
+    await setupAgents();
+    // Un mensaje previo que el usuario "estaba viendo".
+    const prev = await postMessage(cwd, { from: 'claudio', to: 'opencito', text: 'previo' });
+
+    const msg = await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'hola', seenUpTo: prev.id });
+    expect(msg.seenUpTo).toBe(prev.id);
+  });
+
+  it('[discrimina] seenUpTo válido → crossedMessages devuelve sólo lo posterior y del destinatario', async () => {
+    await setupAgents();
+    // claudio le manda algo al usuario; el usuario lo "veía" (prev).
+    const prev = await postMessage(cwd, { from: 'claudio', to: 'usuario', text: 'visible' });
+    // Después de prev, claudio manda otro que el usuario NO veía.
+    const posterior = await postMessage(cwd, { from: 'claudio', to: 'usuario', text: 'no visto' });
+    // El usuario responde sellando que vio hasta prev.
+    const respuesta = await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'ok', seenUpTo: prev.id });
+
+    const all = await listMessages(cwd);
+    const crossed = crossedMessages(all, respuesta);
+    expect(crossed.map((m) => m.id)).toEqual([posterior.id]);
+  });
+
+  it('[discrimina] seenUpTo inexistente → crossedMessages devuelve [] (no la lista completa)', async () => {
+    await setupAgents();
+    await postMessage(cwd, { from: 'claudio', to: 'usuario', text: 'algo' });
+    const respuesta = await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'ok', seenUpTo: 'no-existe' });
+    expect(crossedMessages(await listMessages(cwd), respuesta)).toEqual([]);
+  });
+
+  it('[discrimina] seenUpTo no-string → crossedMessages devuelve []', async () => {
+    await setupAgents();
+    await postMessage(cwd, { from: 'claudio', to: 'usuario', text: 'algo' });
+    const respuesta = await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'ok', seenUpTo: 123 });
+    expect(crossedMessages(await listMessages(cwd), respuesta)).toEqual([]);
+  });
+
+  it('[discrimina] sin seenUpTo (camino del CLI) → crossedMessages devuelve []', async () => {
+    await setupAgents();
+    await postMessage(cwd, { from: 'claudio', to: 'usuario', text: 'algo' });
+    const respuesta = await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'ok' });
+    expect(crossedMessages(await listMessages(cwd), respuesta)).toEqual([]);
+  });
+
+  it('[regresión] seenUpTo por parámetro se IGNORA para un agente: sigue usando su cursor', async () => {
+    await setupAgents();
+    const m1 = await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'uno' });
+    await markDelivered(cwd, 'claudio', m1.id);
+    // claudio tiene el cursor en m1; manda un param de seenUpTo arbitrario → debe ignorarse.
+    const m2 = await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'dos' });
+    const respuesta = await postMessage(cwd, { from: 'claudio', to: 'usuario', text: 'ok', seenUpTo: 'cualquier-cosa' });
+    expect(respuesta.seenUpTo).toBe(m1.id); // su cursor, no el parámetro
+    // Y crossedMessages acusa correctamente m2 (después del cursor).
+    const all = await listMessages(cwd);
+    expect(crossedMessages(all, respuesta).map((m) => m.id)).toEqual([m2.id]);
+  });
+});
+
+describe('opción A — sólo mensajes del destinatario (criterio C6)', () => {
+  it('[discrimina] cruce con SÓLO mensajes de un tercero → [] (tres agentes)', async () => {
+    // El tercero (verifier) le manda algo al EMISOR (opencito).
+    // Sin el filtro A, crossedMessages lo acusaría (m.to === 'opencito').
+    // Con A, se excluye porque m.from = 'verifier' ≠ message.to = 'claudio'.
+    await setupAgents();
+    await registerAgent(cwd, { name: 'verifier' });
+    await postMessage(cwd, { from: 'verifier', to: 'opencito', text: 'ajeno al par' });
+    const respuesta = await postMessage(cwd, { from: 'opencito', to: 'claudio', text: 'ok' });
+    expect(crossedMessages(await listMessages(cwd), respuesta)).toEqual([]);
+  });
+
+  it('[discrimina] cruce mixto → sólo los del destinatario (tres agentes)', async () => {
+    await setupAgents();
+    await registerAgent(cwd, { name: 'verifier' });
+    // Un mensaje de opencito a claudio (del destinatario).
+    const deOpencito = await postMessage(cwd, { from: 'opencito', to: 'claudio', text: 'del destinatario' });
+    // Un mensaje de verifier a claudio (de un tercero).
+    await postMessage(cwd, { from: 'verifier', to: 'claudio', text: 'del tercero' });
+    // claudio responde a opencito sin haber visto ninguno de los dos.
+    const respuesta = await postMessage(cwd, { from: 'claudio', to: 'opencito', text: 'ok' });
+    const crossed = crossedMessages(await listMessages(cwd), respuesta);
+    // Sólo el de opencito; el de verifier no es cruce del par claudio↔opencito.
+    expect(crossed.map((m) => m.id)).toEqual([deOpencito.id]);
+  });
+
+  it('[discrimina] usuario → claudio, con mensajes de claudio Y de verifier sin ver → sólo los de claudio', async () => {
+    await setupAgents();
+    await registerAgent(cwd, { name: 'verifier' });
+    // El usuario "veía" hasta aquí.
+    const prev = await postMessage(cwd, { from: 'claudio', to: 'usuario', text: 'antiguo visible' });
+    // Después de prev: claudio le manda al usuario (debe acusarse).
+    const deClaudio = await postMessage(cwd, { from: 'claudio', to: 'usuario', text: 'no visto' });
+    // Verifier también le manda al usuario (de un tercero, no debe acusarse).
+    await postMessage(cwd, { from: 'verifier', to: 'usuario', text: 'ajeno' });
+    // El usuario responde a claudio.
+    const respuesta = await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'ok', seenUpTo: prev.id });
+    const crossed = crossedMessages(await listMessages(cwd), respuesta);
+    expect(crossed.map((m) => m.id)).toEqual([deClaudio.id]);
+  });
+
+  it('[discrimina] formatForTerminal sobre cruce mixto: el número del tercero NO aparece', async () => {
+    await setupAgents();
+    await registerAgent(cwd, { name: 'verifier' });
+    const deOpencito = await postMessage(cwd, { from: 'opencito', to: 'claudio', text: 'del destinatario' });
+    await postMessage(cwd, { from: 'verifier', to: 'claudio', text: 'del tercero' });
+    const respuesta = await postMessage(cwd, { from: 'claudio', to: 'opencito', text: 'ok' });
+    const all = await listMessages(cwd);
+    const crossed = crossedMessages(all, respuesta);
+    const text = formatForTerminal(all.find((m) => m.id === respuesta.id), { crossed });
+    // El seq de opencito debe aparecer; el de verifier no.
+    const seqOpencito = all.find((m) => m.id === deOpencito.id).seq;
+    const seqVerifier = all.find((m) => m.from === 'verifier').seq;
+    expect(text).toContain(`#${seqOpencito}`);
+    expect(text).not.toContain(`#${seqVerifier}`);
+  });
+});
+
+describe('tope de crossedMessages en formatForTerminal (criterio C5)', () => {
+  it('[discrimina] 540 cruzados → 5 números + (y 535 anteriores)', () => {
+    const crossed = Array.from({ length: 540 }, (_, i) => ({
+      id: `m${i}`, seq: i + 1, from: 'claudio', to: 'opencito', text: `msg ${i}`,
+    }));
+    const text = formatForTerminal(
+      { from: 'claudio', to: 'opencito', text: 'ok', seq: 541 },
+      { crossed },
+    );
+    // Los 5 más recientes: seq 536, 537, 538, 539, 540.
+    expect(text).toContain('#536');
+    expect(text).toContain('#537');
+    expect(text).toContain('#538');
+    expect(text).toContain('#539');
+    expect(text).toContain('#540');
+    expect(text).toContain('(y 535 anteriores)');
+    // Los primeros no aparecen.
+    expect(text).not.toContain('#1,');
+    expect(text).not.toContain('#1 ');
+  });
+
+  it('[discrimina/borde] 6 → (y 1 anterior) en singular; 5 → sin contador; 1 → "tu mensaje #N"', () => {
+    const make = (n) => Array.from({ length: n }, (_, i) => ({ id: `m${i}`, seq: i + 1 }));
+    const msg = { from: 'a', to: 'b', text: 'x' };
+
+    const t6 = formatForTerminal(msg, { crossed: make(6) });
+    expect(t6).toContain('(y 1 anterior)');
+    expect(t6).not.toContain('anteriores');
+
+    const t5 = formatForTerminal(msg, { crossed: make(5) });
+    expect(t5).not.toContain('anterior');
+
+    const t1 = formatForTerminal(msg, { crossed: make(1) });
+    expect(t1).toContain('tu mensaje #1');
+    expect(t1).not.toContain('anterior');
   });
 });

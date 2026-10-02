@@ -161,6 +161,9 @@ export async function run(argv, {
   } catch (e) {
     return fail(e.message);
   }
+  if (me === 'bento') {
+    return fail('"@bento" es un nombre reservado por Bento. Usá otro nombre con --as o en YBENTO_AGENT.');
+  }
 
   try {
     switch (command) {
@@ -274,8 +277,14 @@ export async function run(argv, {
             + 'o por stdin: ybento enviar @opencito <<\'FIN\' … FIN');
         }
 
+        let toName;
+        try { toName = normalizeName(destino); } catch (e) { return fail(e.message); }
+        if (toName === 'bento') {
+          return fail('@bento es un nombre reservado por Bento. Los agentes no pueden escribirle a @bento.');
+        }
+
         const msg = await postMessage(root, {
-          from: me, to: destino, text, replyTo: flags.re,
+          from: me, to: toName, text, replyTo: flags.re,
         });
 
         // Volver a `waiting` al enviar, salvo que se pida lo contrario.

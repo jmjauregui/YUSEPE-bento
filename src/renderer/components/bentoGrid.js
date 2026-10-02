@@ -17,7 +17,7 @@ import { bus } from '../core/eventBus.js';
 import { state } from '../core/state.js';
 import { renderTile } from './tile.js';
 import { ProfileManager } from '../core/profileManager.js';
-import { GRID_COLS, findEmptySpot, resolveColGrowth, resolveRowGrowth, moveTileTo, findNeighbor, autoArrange } from '../core/layout.js';
+import { GRID_COLS, findEmptySpot, resolveColGrowth, resolveRowGrowth, resolveColGrowthLeft, resolveRowGrowthUp, moveTileTo, findNeighbor, pointToCell, rowDelta, autoScrollStep, autoArrange } from '../core/layout.js';
 import { TEMPLATE_ROWS } from '../core/layoutTemplates.js';
 import * as liveTiles from '../core/liveTiles.js';
 import { navEnabled } from '../core/browserNav.js';
@@ -33,6 +33,7 @@ const grid = document.getElementById('bento');
 const holdingArea = document.getElementById('tile-holding-area');
 
 let focusedTileId = null;
+let lastRenderedProfileId = null;
 
 const renderedTiles = new Map();  // tileId -> { node, dispose }
 const pendingRenders = new Set(); // tileId en render async
@@ -40,9 +41,9 @@ const pendingRenders = new Set(); // tileId en render async
 /* ===================== Helpers de grid ===================== */
 
 function getColWidth() {
-  const rect = grid.getBoundingClientRect();
-  if (!rect.width) return 100;
-  return (rect.width - (GRID_COLS - 1) * GAP) / GRID_COLS;
+  const w = grid.clientWidth;
+  if (!w) return 100;
+  return (w - (GRID_COLS - 1) * GAP) / GRID_COLS;
 }
 
 function getGridRows() {
@@ -412,7 +413,32 @@ function addHandles(node, tileId) {
   resizeBR.title = 'Arrastrar para cambiar ancho y alto';
   resizeBR.addEventListener('mousedown', (e) => startResize(e, tileId, 'br'));
 
-  node.append(move, resizeR, resizeB, resizeBR);
+  const resizeL = document.createElement('div');
+  resizeL.className = 'tile-handle-l';
+  resizeL.title = 'Arrastrar para cambiar el ancho';
+  resizeL.addEventListener('mousedown', (e) => startResize(e, tileId, 'l'));
+
+  const resizeT = document.createElement('div');
+  resizeT.className = 'tile-handle-t';
+  resizeT.title = 'Arrastrar para cambiar el alto';
+  resizeT.addEventListener('mousedown', (e) => startResize(e, tileId, 't'));
+
+  const resizeTL = document.createElement('div');
+  resizeTL.className = 'tile-handle-tl';
+  resizeTL.title = 'Arrastrar para cambiar ancho y alto';
+  resizeTL.addEventListener('mousedown', (e) => startResize(e, tileId, 'tl'));
+
+  const resizeTR = document.createElement('div');
+  resizeTR.className = 'tile-handle-tr';
+  resizeTR.title = 'Arrastrar para cambiar ancho y alto';
+  resizeTR.addEventListener('mousedown', (e) => startResize(e, tileId, 'tr'));
+
+  const resizeBL = document.createElement('div');
+  resizeBL.className = 'tile-handle-bl';
+  resizeBL.title = 'Arrastrar para cambiar ancho y alto';
+  resizeBL.addEventListener('mousedown', (e) => startResize(e, tileId, 'bl'));
+
+  node.append(move, resizeR, resizeB, resizeBR, resizeL, resizeT, resizeTL, resizeTR, resizeBL);
 }
 
 /* ===================== Resize ===================== */
@@ -439,18 +465,23 @@ function startResize(e, tileId, dir) {
   const startY = e.clientY;
   const startCS = tile.colSpan || 1;
   const startRS = tile.rowSpan || 1;
+  const startScroll = grid.scrollTop;
 
   const colWidth = getColWidth();
   const rowHeight = getRowHeight();
 
+  let lastClientX = e.clientX;
+  let lastClientY = e.clientY;
+  let rafId = null;
+
   beginDrag();
 
-  function onMove(ev) {
-    const dx = ev.clientX - startX;
-    const dy = ev.clientY - startY;
+  function doResize(clientX, clientY) {
+    const dx = clientX - startX;
+    const dRows = rowDelta({ startY, startScroll, y: clientY, scroll: grid.scrollTop, rowHeight });
     const tiles = state.profile?.tiles || [];
 
-    if (dir === 'r' || dir === 'br') {
+    if (dir === 'r' || dir === 'br' || dir === 'tr') {
       const deltaCols = Math.round(dx / colWidth);
       const desiredCS = Math.max(1, startCS + deltaCols);
       if (desiredCS !== (tile.colSpan || 1)) {
@@ -458,17 +489,32 @@ function startResize(e, tileId, dir) {
         if (result) applyColResult(result);
       }
     }
-    if (dir === 'b' || dir === 'br') {
-      const deltaRows = Math.round(dy / rowHeight);
-      const desiredRS = Math.max(1, startRS + deltaRows);
+    if (dir === 'l' || dir === 'tl' || dir === 'bl') {
+      const deltaCols = Math.round(dx / colWidth);
+      const desiredCS = Math.max(1, startCS - deltaCols);
+      if (desiredCS !== (tile.colSpan || 1)) {
+        const result = resolveColGrowthLeft(tiles, tileId, desiredCS);
+        if (result) applyColResult(result);
+      }
+    }
+    if (dir === 'b' || dir === 'br' || dir === 'bl') {
+      const desiredRS = Math.max(1, startRS + dRows);
       if (desiredRS !== (tile.rowSpan || 1)) {
         const result = resolveRowGrowth(tiles, tileId, desiredRS);
+        if (result) applyRowResult(result);
+      }
+    }
+    if (dir === 't' || dir === 'tl' || dir === 'tr') {
+      const desiredRS = Math.max(1, startRS - dRows);
+      if (desiredRS !== (tile.rowSpan || 1)) {
+        const result = resolveRowGrowthUp(tiles, tileId, desiredRS);
         if (result) applyRowResult(result);
       }
     }
   }
 
   function applyColResult(result) {
+    if (result.col != null) tile.col = result.col;
     tile.colSpan = result.colSpan;
     updateTilePosition(tileId);
     for (const p of result.pushed) {
@@ -479,6 +525,7 @@ function startResize(e, tileId, dir) {
   }
 
   function applyRowResult(result) {
+    if (result.row != null) tile.row = result.row;
     tile.rowSpan = result.rowSpan;
     updateTilePosition(tileId);
     for (const p of result.pushed) {
@@ -488,18 +535,38 @@ function startResize(e, tileId, dir) {
     }
   }
 
+  function tick() {
+    const rect = grid.getBoundingClientRect();
+    const step = autoScrollStep(lastClientY, rect.top, rect.bottom);
+    if (step !== 0) {
+      grid.scrollTop += step;
+      doResize(lastClientX, lastClientY);
+    }
+    rafId = requestAnimationFrame(tick);
+  }
+
+  function onMove(ev) {
+    lastClientX = ev.clientX;
+    lastClientY = ev.clientY;
+    doResize(ev.clientX, ev.clientY);
+  }
+
   function onUp() {
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseup', onUp);
+    cancelAnimationFrame(rafId);
     endDrag();
     // Los vecinos empujados ya quedaron mutados en sus propios objetos;
     // saveCurrent() persiste el perfil completo (incluye esos cambios).
     ProfileManager.updateTile(tileId, {
+      col: tile.col,
+      row: tile.row,
       colSpan: tile.colSpan,
       rowSpan: tile.rowSpan,
     }).catch((err) => console.error('[bento] resize save:', err));
   }
 
+  rafId = requestAnimationFrame(tick);
   document.addEventListener('mousemove', onMove);
   document.addEventListener('mouseup', onUp);
 }
@@ -511,9 +578,13 @@ function cellAtPoint(clientX, clientY) {
   const rect = grid.getBoundingClientRect();
   const colStep = getColWidth() + GAP;
   const rowStep = getRowHeight() + GAP;
-  const col = Math.floor((clientX - rect.left) / colStep) + 1;
-  const row = Math.floor((clientY - rect.top) / rowStep) + 1;
-  return { col: Math.max(1, col), row: Math.max(1, row) };
+  return pointToCell({
+    x: clientX - rect.left,
+    y: clientY - rect.top,
+    scrollTop: grid.scrollTop,
+    colStep,
+    rowStep,
+  });
 }
 
 function startMove(e, tileId) {
@@ -532,9 +603,12 @@ function startMove(e, tileId) {
   const snapshot = tiles.map((t) => ({ tile: t, col: t.col || 1, row: t.row || 1 }));
   let lastCol = null;
   let lastRow = null;
+  let lastClientX = e.clientX;
+  let lastClientY = e.clientY;
+  let rafId = null;
 
-  function onMove(ev) {
-    const { col, row } = cellAtPoint(ev.clientX, ev.clientY);
+  function doMove(clientX, clientY) {
+    const { col, row } = cellAtPoint(clientX, clientY);
     if (col === lastCol && row === lastRow) return;
     lastCol = col;
     lastRow = row;
@@ -543,14 +617,32 @@ function startMove(e, tileId) {
     for (const t of tiles) updateTilePosition(t.id);
   }
 
+  function tick() {
+    const rect = grid.getBoundingClientRect();
+    const step = autoScrollStep(lastClientY, rect.top, rect.bottom);
+    if (step !== 0) {
+      grid.scrollTop += step;
+      doMove(lastClientX, lastClientY);
+    }
+    rafId = requestAnimationFrame(tick);
+  }
+
+  function onMove(ev) {
+    lastClientX = ev.clientX;
+    lastClientY = ev.clientY;
+    doMove(ev.clientX, ev.clientY);
+  }
+
   function onUp() {
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseup', onUp);
+    cancelAnimationFrame(rafId);
     endDrag();
     renderedTiles.get(tileId)?.node?.classList.remove('is-moving');
     ProfileManager.saveCurrent().catch((err) => console.error('[bento] move save:', err));
   }
 
+  rafId = requestAnimationFrame(tick);
   document.addEventListener('mousemove', onMove);
   document.addEventListener('mouseup', onUp);
 }
@@ -564,7 +656,15 @@ export async function renderBento() {
   if (!profile) {
     disposeAllTiles();
     grid.classList.add('hidden');
+    lastRenderedProfileId = null;
     return;
+  }
+
+  // Al cambiar de workspace, el grid es el mismo elemento: su scrollTop
+  // sobreviviría. Se pone en 0 para que cada workspace arranque arriba.
+  if (profile.id !== lastRenderedProfileId) {
+    grid.scrollTop = 0;
+    lastRenderedProfileId = profile.id;
   }
 
   if (!profile.tiles?.length) {
@@ -581,6 +681,10 @@ export async function renderBento() {
 
   // Auto-posicionar tiles sin col/row
   const positionsChanged = ensurePositions(profile.tiles);
+
+  // Si ya había tiles, el usuario está agregando uno nuevo: se scrolleará
+  // hasta él. Si no había (carga de workspace), el scroll ya está en 0.
+  const existingTileCount = renderedTiles.size;
 
   grid.classList.remove('hidden');
   grid.style.gridTemplateColumns = `repeat(${GRID_COLS}, 1fr)`;
@@ -630,6 +734,7 @@ export async function renderBento() {
       updateTilePosition(tile.id);
       addHandles(result.node, tile.id);
       pendingRenders.delete(tile.id);
+      if (existingTileCount > 0) result.node.scrollIntoView({ block: 'nearest' });
     }
   }
 

@@ -68,6 +68,15 @@ export default defineConfig({
 
   renderer: {
     root: resolve(__dirname, 'src/renderer'),
+    // Puerto fijo del dev server, lejos del 5173 que Vite usa por defecto y que
+    // suele estar tomado por otros proyectos. strictPort: si está ocupado, el
+    // arranque falla con un error claro en vez de saltar en silencio al
+    // siguiente puerto libre. main no tiene el puerto escrito: lo toma de
+    // ELECTRON_RENDERER_URL, que electron-vite completa con el real.
+    server: {
+      port: 5987,
+      strictPort: true,
+    },
     build: {
       // Los ~1250 iconos del Material Icon Theme (ver core/fileIcons.js) son
       // SVGs chicos; con el límite default Vite los inlinearía como data-URI
