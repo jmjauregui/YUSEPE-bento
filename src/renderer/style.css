@@ -647,14 +647,15 @@
     left: 0; right: 0; bottom: 0;
     z-index: 2;
     pointer-events: none;
-    /* Degradado: transparente arriba (sin línea de corte) → velo ≥60 % abajo
-       (la franja de la leyenda, donde los mensajes pasan por detrás). */
+    /* Degradado: transparente arriba (sin línea de corte) → velo del fondo abajo
+       (la franja de la leyenda). Sin desenfoque: el texto del hilo pasa por detrás
+       visible y nítido, que es lo que se quiere. El 70 % de opacidad da contraste
+       suficiente para leer el "Enter envía…" sin necesitar blur. */
     background: linear-gradient(
       to bottom,
       transparent 0%,
       color-mix(in srgb, var(--color-bg-soft) 70%, transparent) 35%
     );
-    backdrop-filter: blur(10px) saturate(180%);
   }
   /* La caja de escritura y la barra de herramientas reciben eventos;
      el envoltorio no, para que la rueda del mouse scrollee el hilo. */
