@@ -503,8 +503,12 @@
   #loop-sidebar.is-expanded {
     display: grid;
     left: 0;
-    width: auto !important; /* pisa el ancho guardado del panel lateral */
-    border-left: none;
+    right: 0;
+    top: 3rem;           /* = top-12; bajo la topbar, igual en los 4 bordes */
+    bottom: 0;
+    width: auto !important;  /* pisa el ancho guardado (eje x) */
+    height: auto !important; /* pisa el alto guardado (eje y — panel arriba/abajo) */
+    border: none;        /* neutraliza border-left/right/top/bottom según posición */
     grid-template-columns: var(--loop-left-w, 280px) minmax(0, 1fr) var(--loop-right-w, 380px);
     grid-template-rows: auto auto minmax(0, 1fr) auto;
     grid-template-areas:
