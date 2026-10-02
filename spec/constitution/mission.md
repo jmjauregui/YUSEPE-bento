@@ -1,21 +1,25 @@
 # Misión
 
+> La [constitución](constitution.md) manda sobre este documento: qué es
+> Bento, qué no es y cómo se gobierna se decide allá. Acá se baja a tierra.
+
 ## Qué construimos
 
-YUSEPE Bento es una app de escritorio (Electron) que funciona como hub de espacios de trabajo personales ("perfiles") con un Bento Grid dinámico y redimensionable. Resuelve el problema de tener decenas de herramientas dispersas integrando terminales reales, navegador embebido, explorador de archivos, panel Git, tareas, snippets y un loop multiagente en una sola ventana organizable.
+YUSEPE Bento es **el cockpit para orquestar agentes de IA**: una app de escritorio (Electron) donde el flujo con agentes de código —terminales reales, agentes que se hablan entre sí, tareas que alimentan al agente— vive en un Bento Grid redimensionable y reorganizable a mano. El resto de las piezas (explorador, Git, webapps, snippets) existen para servir a ese flujo.
 
 Piezas principales del producto:
 
-1. **Bento Grid** — grid de 48 columnas (12 hasta v1.5.3) redimensionable a mano; los tiles se colocan, mueven y empujan entre sí.
-2. **Tiles funcionales** — terminal (node-pty), webview, calculadora, explorador de archivos, panel Git, panel de Agentes, Tareas.
-3. **Loop multiagente** — varias terminales con agentes distintos (Claude Code, opencode…) que se envían mensajes entre sí con el CLI `ybento`.
-4. **Workspaces / Perfiles** — cada perfil tiene su propio grid, carpeta de proyecto (cwd), wallpaper y estado de tiles.
-5. **Snippets** — librería global de comandos/rutinas multi-línea ejecutables en la terminal activa.
+1. **Loop multiagente** — varias terminales con agentes distintos (Claude Code, opencode…) que se envían mensajes entre sí con el CLI `ybento`. Es el centro del producto.
+2. **Tareas + launchText** — tareas como `.md` versionados en git y texto listo para pasarle al agente.
+3. **Bento Grid** — grid de 48 columnas (12 hasta v1.5.3) redimensionable a mano; los tiles se colocan, mueven y empujan entre sí.
+4. **Tiles funcionales** — terminal (node-pty), webview, calculadora, explorador de archivos, panel Git, panel de Agentes, Tareas.
+5. **Workspaces / Perfiles** — cada perfil tiene su propio grid, carpeta de proyecto (cwd), wallpaper y estado de tiles.
+6. **Snippets** — librería global de comandos/rutinas multi-línea ejecutables en la terminal activa.
 
 ## Para quién
 
-- **Desarrollador individual** que trabaja en varios proyectos y quiere un único hub en vez de múltiples ventanas de terminal + browser.
-- **Usuario de agentes de IA** (Claude Code, opencode) que quiere orquestar varios agentes en paralelo desde una sola app.
+- **El dev que trabaja con agentes de código** (Claude Code, opencode, Codex…) y quiere orquestar varios en paralelo desde una sola app, en vez de malabarear terminales y ventanas a mano.
+- Que acepta un flujo opinado: Bento propone uno, no se adapta a cualquiera.
 
 ## Principios
 
@@ -27,7 +31,8 @@ Piezas principales del producto:
 
 ## Qué NO es
 
+Las líneas rojas están en la [constitución, sección 2](constitution.md#2-qué-no-es-bento): no es un editor de código, no es para reproducir contenido, no es un browser, no es un gestor de workspaces genérico. Además, en lo técnico:
+
 - No es un gestor de ventanas del sistema operativo (no mueve ventanas nativas ajenas).
-- No es un IDE completo (el editor de código no es una pieza core; hay webview para eso).
 - No es una plataforma multiusuario ni tiene backend en la nube.
 - No usa frameworks de UI reactivos (React, Vue, Svelte, Solid…).

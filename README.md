@@ -141,18 +141,21 @@ flowchart LR
 
 ## Qué es y qué no es Bento
 
-Resumen de [`spec/constitution/mission.md`](spec/constitution/mission.md):
+Resumen de la [constitución](spec/constitution/constitution.md), la vara
+contra la que se mide toda contribución:
 
-- **Es** un hub de espacios de trabajo con terminales reales, navegador
-  embebido, explorador, Git, tareas, snippets y un loop multiagente en una
-  sola ventana organizable.
-- **El disco es la fuente de verdad**: todo persiste en archivos reales
-  (JSON, `.md`, `.jsonl`), sin base de datos ni backend.
-- **No es** un gestor de ventanas del sistema: no mueve ventanas de otras apps.
-- **No es** un IDE: el editor de código no es una pieza central.
-- **No es** multiusuario ni tiene nube.
-- **No usa** frameworks de UI (React, Vue, Svelte…): Vanilla JS con `Proxy`
-  y un bus de eventos.
+- **Es** el cockpit para orquestar agentes de IA. **Propone un flujo**; no
+  busca adaptarse a cualquiera.
+- **No es** un editor de código: orquesta, no edita.
+- **No es** un sistema para reproducir contenido: es para orquestar trabajo,
+  no para consumirlo.
+- **No es** un browser: las webapps embebidas sirven al flujo de trabajo.
+- **No es** un gestor de workspaces genérico: es específicamente para
+  orquestar agentes.
+
+Lo que no calza con la visión pero tiene valor va como plugin/extensión, no
+al núcleo. Las decisiones de qué entra las toma el mantenedor principal, y
+todo "no" se justifica contra la constitución, nunca contra el gusto.
 
 ---
 
@@ -673,7 +676,9 @@ Pendiente:
 
 - Las features nuevas siguen un flujo de **spec antes que código**: ver
   [`spec/README.md`](spec/README.md) y la constitución en
-  [`spec/constitution/`](spec/constitution/) (misión, stack y roadmap).
+  [`spec/constitution/`](spec/constitution/): la
+  [constitución](spec/constitution/constitution.md) manda, después misión,
+  stack y roadmap.
 - Antes de abrir un PR: `npm run lint && npm test && npm run build`.
 - Los PRs van contra `develop`.
 - Código de conducta: [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).

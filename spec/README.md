@@ -7,6 +7,7 @@ Documentación viva del proyecto Bento. La constitución define qué somos y có
 ```
 spec/
 ├── constitution/            ← reglas estables del proyecto
+│   ├── constitution.md      ← qué es Bento, qué no es y cómo se gobierna (manda sobre el resto)
 │   ├── mission.md           ← qué construimos y para quién
 │   ├── tech-stack.md        ← tecnologías, convenciones y límites duros
 │   └── roadmap.md           ← orden y estado de las features
@@ -30,4 +31,4 @@ spec/
 5. Desglosar en `tasks.md` de la feature y marcar el progreso al implementar.
 6. Actualizar `constitution/roadmap.md` (mover a "Hecho") al terminar.
 
-> La constitución manda: si una feature choca con `mission.md` o `tech-stack.md`, se replantea la feature, no la constitución.
+> La constitución manda: si una feature choca con `constitution.md` (sobre todo sus líneas rojas), `mission.md` o `tech-stack.md`, se replantea la feature, no la constitución. Si es valiosa pero fuera de la visión, va como plugin/extensión, no al núcleo.
