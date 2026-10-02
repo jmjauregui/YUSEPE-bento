@@ -352,18 +352,31 @@
      que es el borde "interior" del panel. Ver utils/resizableSidebar.js. */
   .sidebar-resize-handle {
     position: absolute;
-    top: 0;
-    bottom: 0;
-    width: 6px;
     z-index: 5;
-    cursor: col-resize;
-    /* Línea de accent que aparece al hover/arrastrar, pegada al borde. */
     background: transparent;
     transition: background 0.12s;
   }
+  /* Bordes verticales (eje x) */
+  .sidebar-resize-handle[data-edge='right'],
+  .sidebar-resize-handle[data-edge='left'] {
+    top: 0; bottom: 0;
+    width: 6px;
+    cursor: col-resize;
+  }
   .sidebar-resize-handle[data-edge='right'] { right: 0; }
-  .sidebar-resize-handle[data-edge='left'] { left: 0; }
+  .sidebar-resize-handle[data-edge='left']  { left: 0; }
 
+  /* Bordes horizontales (eje y) */
+  .sidebar-resize-handle[data-edge='top'],
+  .sidebar-resize-handle[data-edge='bottom'] {
+    left: 0; right: 0;
+    height: 6px;
+    cursor: row-resize;
+  }
+  .sidebar-resize-handle[data-edge='top']    { top: 0; }
+  .sidebar-resize-handle[data-edge='bottom'] { bottom: 0; }
+
+  /* Línea de accent al hover/arrastrar, pegada al borde interior del panel. */
   .sidebar-resize-handle[data-edge='right']:hover,
   body.resizing-sidebar .sidebar-resize-handle[data-edge='right'] {
     background: linear-gradient(to right, transparent, rgb(var(--color-accent-rgb) / 0.5));
@@ -372,14 +385,21 @@
   body.resizing-sidebar .sidebar-resize-handle[data-edge='left'] {
     background: linear-gradient(to left, transparent, rgb(var(--color-accent-rgb) / 0.5));
   }
+  .sidebar-resize-handle[data-edge='bottom']:hover,
+  body.resizing-sidebar .sidebar-resize-handle[data-edge='bottom'] {
+    background: linear-gradient(to bottom, transparent, rgb(var(--color-accent-rgb) / 0.5));
+  }
+  .sidebar-resize-handle[data-edge='top']:hover,
+  body.resizing-sidebar .sidebar-resize-handle[data-edge='top'] {
+    background: linear-gradient(to top, transparent, rgb(var(--color-accent-rgb) / 0.5));
+  }
 
-  /* Mientras se arrastra: cursor global + sin selección + los webviews
-     dejan de capturar el puntero (si no, el drag se "pega" al pasar sobre
-     un tile de webview, igual que en el drag de tiles). */
+  /* Mientras se arrastra: sin selección + webviews dejan de capturar el puntero. */
   body.resizing-sidebar {
-    cursor: col-resize;
     user-select: none;
   }
+  body.resizing-sidebar-x { cursor: col-resize; }
+  body.resizing-sidebar-y { cursor: row-resize; }
   body.resizing-sidebar webview {
     pointer-events: none;
   }

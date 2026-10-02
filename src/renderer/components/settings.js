@@ -13,6 +13,8 @@ import { buildWallpaperSection } from './wallpaperPicker.js';
 import { SOUNDS, getSound, setSound, playSound } from '../core/loopNotify.js';
 import { getLoopMode, setLoopMode } from './loopSidebar.js';
 import { OBSERVER_KEY, OBSERVER_DEFAULT_MS, setObserverThreshold } from '../core/observerSettings.js';
+import { getPanelPosition, setPanelPosition } from '../core/panelPosition.js';
+import { bus } from '../core/eventBus.js';
 
 export function openSettings() {
   function themeButton(mode, iconName, label) {
@@ -170,8 +172,47 @@ export function openSettings() {
     ]);
   }
 
+  function buildPositionSection() {
+    const OPTS = [
+      { id: 'right',  label: 'Derecha (predeterminado)' },
+      { id: 'left',   label: 'Izquierda' },
+      { id: 'top',    label: 'Arriba' },
+      { id: 'bottom', label: 'Abajo' },
+    ];
+
+    let current = getPanelPosition();
+
+    const rows = OPTS.map((opt) => {
+      const radio = h('input', {
+        type: 'radio',
+        name: 'loop-position',
+        value: opt.id,
+        class: 'w-3 h-3 mt-0.5 shrink-0 cursor-pointer',
+        style: 'accent-color: var(--color-accent)',
+      });
+      if (opt.id === current) radio.checked = true;
+
+      radio.addEventListener('change', () => {
+        current = opt.id;
+        setPanelPosition(opt.id);
+        bus.emit('loop:position-changed', opt.id);
+      });
+
+      return h('label', {
+        class: 'flex items-center gap-2 py-1 cursor-pointer select-none',
+      }, [radio, h('span', { class: 'text-xs text-fg' }, opt.label)]);
+    });
+
+    return h('div', {}, [
+      h('span', { class: 'text-sm text-fg block mb-1' }, 'Posición del panel del loop'),
+      h('div', { class: 'grid grid-cols-2 gap-x-4' }, rows),
+    ]);
+  }
+
   const body = h('div', {}, [
     themeRow,
+    h('div', { class: 'border-t border-line my-4' }),
+    buildPositionSection(),
     h('div', { class: 'border-t border-line my-4' }),
     buildLoopModeSection(),
     h('div', { class: 'border-t border-line my-4' }),

@@ -35,6 +35,7 @@ import * as liveTiles from '../core/liveTiles.js';
 import { focusTileById } from './bentoGrid.js';
 import { labelFor } from './workspaceManager.js';
 import { applySavedWidth, makeResizeHandle } from '../utils/resizableSidebar.js';
+import { getPanelPosition, panelLayout, ALL_POSITION_CLASSES } from '../core/panelPosition.js';
 import { toast } from './toast.js';
 import { notifyUserMessage } from '../core/loopNotify.js';
 import { createCopyFeedback } from '../core/copyFeedback.js';
@@ -43,15 +44,7 @@ import { activityState } from '../core/loopActivity.js';
 import { agentDotState } from '../core/agentDot.js';
 import { matchMessages, highlightSegments, initialNavIndex, moveNavIndex, navLabel } from '../core/loopSearch.js';
 
-const WIDTH_OPTS = {
-  storageKey: 'yusepe:loop-width',
-  // El panel está pegado al borde derecho, así que su borde "interior" —
-  // por donde se agarra para agrandarlo — es el izquierdo.
-  edge: 'left',
-  min: 300,
-  max: 900,
-  defaultWidth: 384,
-};
+let resizeHandleEl = null;
 
 /**
  * A partir de acá un mensaje se colapsa. Los reportes de QA entre agentes
@@ -238,8 +231,8 @@ export function initLoopSidebar() {
   panelEl = document.getElementById('loop-sidebar');
   if (!panelEl) return;
 
-  applySavedWidth(panelEl, WIDTH_OPTS);
   buildChrome();
+  applyPanelPosition(getPanelPosition());
 
   // Ctrl+F: abrir buscador del loop salvo que el foco esté en una terminal.
   document.addEventListener('keydown', (e) => {
@@ -256,6 +249,8 @@ export function initLoopSidebar() {
     if (e.key === 'Escape' && (dragState || pressState)) { e.preventDefault(); endDrag(false); }
   });
   window.addEventListener('blur', () => { if (dragState || pressState) endDrag(false); });
+
+  bus.on('loop:position-changed', (pos) => applyPanelPosition(pos));
 
   // El repartidor vive en main y vigila el disco: se arranca al entrar a un
   // workspace y se corta al salir, tenga o no el panel abierto — el loop
@@ -385,6 +380,55 @@ function closeSidebar() {
   if (searchInputEl) searchInputEl.value = '';
   // Parar el reloj del titileo: nada titila con el panel cerrado.
   stopBlinkClock();
+}
+
+/* ---------- Posición del panel (038) ---------- */
+
+/**
+ * Cambia la posición del panel sin destruir ni reconstruir el Chrome.
+ * Solo se reemplaza el handle de redimensionado, que depende del borde.
+ */
+function applyPanelPosition(pos) {
+  if (!panelEl) return;
+  const layout = panelLayout(pos, window.innerHeight);
+
+  // Quitar todas las clases de posicionamiento posibles y poner las nuevas.
+  panelEl.classList.remove(...ALL_POSITION_CLASSES);
+  panelEl.classList.add(...layout.classes.split(' '));
+
+  // Limpiar el tamaño del eje opuesto: si era horizontal, height queda suelta;
+  // si era vertical, width queda suelto. Sin esto el panel quedaría mal dimensionado.
+  if (layout.axis === 'y') {
+    panelEl.style.width = '';
+  } else {
+    panelEl.style.height = '';
+  }
+
+  // Aplicar el tamaño guardado para el eje activo.
+  applySavedWidth(panelEl, {
+    storageKey: layout.storageKey,
+    min: layout.min,
+    max: layout.max,
+    defaultWidth: layout.defaultSize,
+    axis: layout.axis,
+  });
+
+  // Reemplazar SÓLO el nodo del handle — el resto del chrome no se toca.
+  const newHandle = makeResizeHandle({
+    panel: panelEl,
+    storageKey: layout.storageKey,
+    edge: layout.handleEdge,
+    min: layout.min,
+    max: layout.max,
+    defaultWidth: layout.defaultSize,
+    axis: layout.axis,
+  });
+  if (resizeHandleEl && resizeHandleEl.parentNode) {
+    resizeHandleEl.parentNode.replaceChild(newHandle, resizeHandleEl);
+  } else {
+    panelEl.append(newHandle);
+  }
+  resizeHandleEl = newHandle;
 }
 
 /* ---------- Estructura ---------- */
@@ -534,10 +578,8 @@ function buildChrome() {
 
   composerEl = h('div', { class: 'shrink-0 border-t border-line p-2' });
 
-  panelEl.append(
-    header, rosterEl, streamEl, emptyEl, composerEl,
-    makeResizeHandle({ panel: panelEl, ...WIDTH_OPTS }),
-  );
+  resizeHandleEl = null; // applyPanelPosition lo recreará
+  panelEl.append(header, rosterEl, streamEl, emptyEl, composerEl);
   panelEl.classList.add('flex', 'flex-col');
 }
 
