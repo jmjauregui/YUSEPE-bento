@@ -2,7 +2,7 @@
  * src/renderer/components/bentoGrid.js
  * --------------------------------------------------------------
  * Bento Grid con posiciones manuales:
- *  - Grid de 12 columnas, filas auto (minmax 70px, 1fr).
+ *  - Grid de 48 columnas, filas auto (minmax 35px, 1fr).
  *  - Cada tile tiene col/row/colSpan/rowSpan explícitos.
  *  - Auto-placement para tiles nuevos (busca hueco libre).
  *  - Resize: arrastrar bordes (right, bottom, corner), con push/expand
@@ -17,11 +17,13 @@ import { bus } from '../core/eventBus.js';
 import { state } from '../core/state.js';
 import { renderTile } from './tile.js';
 import { ProfileManager } from '../core/profileManager.js';
-import { GRID_COLS, findEmptySpot, resolveColGrowth, resolveRowGrowth, resolveColGrowthLeft, resolveRowGrowthUp, moveTileTo, findNeighbor, pointToCell, rowDelta, autoScrollStep } from '../core/layout.js';
+import { GRID_COLS, findEmptySpot, resolveColGrowth, resolveRowGrowth, resolveColGrowthLeft, resolveRowGrowthUp, moveTileTo, findNeighbor, pointToCell, rowDelta, autoScrollStep, autoArrange } from '../core/layout.js';
+import { TEMPLATE_ROWS } from '../core/layoutTemplates.js';
 import * as liveTiles from '../core/liveTiles.js';
+import { navEnabled } from '../core/browserNav.js';
 
 const GAP = 8;
-const MIN_ROW_PX = 70;
+const MIN_ROW_PX = 35;
 
 const grid = document.getElementById('bento');
 // Zona oculta (pero dentro del documento) donde "aparcamos" tiles vivos
@@ -81,8 +83,8 @@ function ensurePositions(tiles) {
 
   let changed = false;
   for (const tile of unpositioned) {
-    const cs = tile.colSpan || 4;
-    const rs = tile.rowSpan || 4;
+    const cs = tile.colSpan || 16;
+    const rs = tile.rowSpan || 8;
     const pos = findEmptySpot(cs, rs, occupied);
     tile.col = pos.col;
     tile.row = pos.row;
@@ -114,6 +116,9 @@ function focusTile(tileId) {
   document.querySelectorAll('.tile').forEach((el) => {
     el.classList.toggle('focused', el.dataset.tileId === tileId);
   });
+  // Los tiles que muestran «terminó de trabajar» lo limpian al recibir el
+  // foco (ver components/terminal.js · core/activityState.js).
+  bus.emit('tile:focused', { id: tileId });
 }
 
 // Los tiles webview notifican su foco vía bus (ver webviewTile.js),
@@ -176,6 +181,29 @@ export function moveFocusedTile(dir) {
   moveTileTo(tiles, focusedTileId, newCol, newRow);
   for (const t of tiles) updateTilePosition(t.id);
   ProfileManager.saveCurrent().catch((err) => console.error('[bento] kbd move save:', err));
+}
+
+/**
+ * Reparte todos los tiles en una grilla pareja que entra en pantalla (spec
+ * 035). Mismo camino que moveFocusedTile: muta, reposiciona y guarda, sin
+ * re-render — las terminales y webviews siguen vivas.
+ *
+ * Filas: las que entran en el alto visible con el mínimo de MIN_ROW_PX, con
+ * tope TEMPLATE_ROWS (la altura de referencia de las plantillas). Como las
+ * filas son `1fr`, menos filas que las que entran se estiran hasta llenar.
+ */
+export function autoArrangeTiles() {
+  const tiles = state.profile?.tiles || [];
+  if (!tiles.length) return false;
+  const rect = grid.getBoundingClientRect();
+  const fit = Math.floor((rect.height + GAP) / (MIN_ROW_PX + GAP)) || TEMPLATE_ROWS;
+  autoArrange(tiles, {
+    rows: Math.min(TEMPLATE_ROWS, fit),
+    aspect: rect.width && rect.height ? rect.width / rect.height : 16 / 9,
+  });
+  for (const t of tiles) updateTilePosition(t.id);
+  ProfileManager.saveCurrent().catch((err) => console.error('[bento] auto-arrange save:', err));
+  return true;
 }
 
 /* ===================== Marca de agua de espacio libre ===================== */
@@ -729,6 +757,18 @@ export async function renderBento() {
   }
 
   bus.emit('bento:rendered', { count: tiles.length });
+}
+
+/**
+ * Cmd+L (menú Tile › Barra de dirección): sobre un webview enfocado,
+ * enciende su barra de navegación si estaba apagada y pone el cursor en
+ * la dirección, como en un navegador.
+ */
+export async function toggleAddressBar() {
+  const tile = state.profile?.tiles?.find((t) => t.id === focusedTileId);
+  if (!tile || tile.kind !== 'webview') return;
+  if (!navEnabled(tile)) await ProfileManager.updateTile(tile.id, { nav: true });
+  liveTiles.get(tile.id)?.meta?.focusAddress?.();
 }
 
 export async function closeFocusedTile() {

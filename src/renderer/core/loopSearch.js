@@ -68,3 +68,43 @@ export function navLabel(index, len) {
   if (len === 0 || index < 0) return '';
   return `${len - index} de ${len}`;
 }
+
+function gatherTextNodes(node, nodes = []) {
+  if (node.nodeType === 3) {
+    nodes.push(node);
+  } else if (node.childNodes) {
+    for (let i = 0; i < node.childNodes.length; i++) gatherTextNodes(node.childNodes[i], nodes);
+  }
+  return nodes;
+}
+
+/**
+ * Resalta `query` dentro del árbol DOM de `root` sin tocar innerHTML.
+ * Recorre los nodos de texto y reemplaza cada coincidencia con un <mark>
+ * creado con createElement. NUNCA construye cadenas de HTML.
+ */
+export function highlightInPlace(root, query) {
+  if (!root || !query || !query.trim()) return;
+  const escaped = escapeRegExp(query.trim());
+  const re = new RegExp(escaped, 'gi');
+  const textNodes = gatherTextNodes(root);
+  for (const textNode of textNodes) {
+    const text = textNode.nodeValue;
+    re.lastIndex = 0;
+    if (!re.test(text)) continue;
+    re.lastIndex = 0;
+    const frag = document.createDocumentFragment();
+    let lastIndex = 0;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      if (m.index > lastIndex) frag.appendChild(document.createTextNode(text.slice(lastIndex, m.index)));
+      const mark = document.createElement('mark');
+      mark.className = 'bg-yellow-300/40 text-inherit rounded-sm';
+      mark.appendChild(document.createTextNode(m[0]));
+      frag.appendChild(mark);
+      lastIndex = m.index + m[0].length;
+    }
+    if (lastIndex < text.length) frag.appendChild(document.createTextNode(text.slice(lastIndex)));
+    textNode.parentNode.replaceChild(frag, textNode);
+  }
+}

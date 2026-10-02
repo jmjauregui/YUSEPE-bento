@@ -11,6 +11,7 @@ import { ClipboardAddon } from '@xterm/addon-clipboard';
 import '@xterm/xterm/css/xterm.css';
 import { h, debounce, escapeHtml } from '../utils/dom.js';
 import { bus } from '../core/eventBus.js';
+import { createActivity } from '../core/activityState.js';
 import { state } from '../core/state.js';
 import * as liveTiles from '../core/liveTiles.js';
 
@@ -36,6 +37,16 @@ function readTermTheme() {
     cursor: v('--color-term-cursor', '#0a84ff'),
     selectionBackground: v('--color-term-selection', '#14375f'),
   };
+}
+
+// tileId → ptyId de terminales que otra ventana nos traspasó: al crear el
+// tile, en vez de un shell nuevo nos enganchamos al pty que ya corre y
+// repintamos su salida reciente. Lo llena main.js al arrancar con
+// `?profile=` (ver windows.takeHandoff).
+const pendingAttach = new Map();
+export function setPendingAttach(map) {
+  pendingAttach.clear();
+  for (const [tileId, ptyId] of map || []) pendingAttach.set(tileId, ptyId);
 }
 
 export async function createTerminalTile(tile, profileId) {
@@ -81,10 +92,29 @@ export async function createTerminalTile(tile, profileId) {
     if (tileId === tile.id) paintBadge(name);
   });
 
+  // Punto «terminó de trabajar»: aparece cuando la terminal deja de
+  // escribir y el tile no tiene el foco. Ver core/activityState.js.
+  const dot = h('div', {
+    class: 'tile-activity-dot',
+    title: 'Terminó de trabajar',
+  }, 'listo');
+
   const root = h('div', {
     class: 'tile',
     dataset: { tileId: tile.id, kind: 'terminal' },
-  }, [body, badge]);
+  }, [body, badge, dot]);
+
+  // Color de actividad: trabajando (hay salida) / terminó sin foco.
+  const activity = createActivity({
+    isFocused: () => root.classList.contains('focused'),
+    onChange: (s) => {
+      root.classList.toggle('is-working', s === 'working');
+      root.classList.toggle('is-done', s === 'done');
+    },
+  });
+  const offFocused = bus.on('tile:focused', ({ id }) => {
+    if (id === tile.id) activity.focus();
+  });
 
   let term = null;
   let fit = null;
@@ -186,19 +216,37 @@ export async function createTerminalTile(tile, profileId) {
       // `agent` hace que el pty nazca con YBENTO_AGENT/YBENTO_ROOT en el
       // entorno, así el CLI `ybento` ya sabe quién es sin que el agente
       // tenga que pasar `--as` en cada comando. Ver main/loopShim.js.
-      const { ptyId: id, cwdMissing } = await window.yusepe.pty.create({
-        cols: term.cols,
-        rows: term.rows,
-        cwd: tile.cwd || undefined,
-        agent: tile.loopAgent || undefined,
-        // La raíz del loop es la del workspace, no la del tile: el tile
-        // puede estar parado en una subcarpeta y `.ybento/loop/` vive en
-        // la raíz del proyecto.
-        loopRoot: state.profile?.cwd || tile.cwd || undefined,
-      });
-      ptyId = id;
+      // Traspaso desde otra ventana: el pty ya existe, solo cambiamos de
+      // dueño y repintamos lo último que escribió. Si ya murió, se crea
+      // un shell nuevo como siempre.
+      let attached = false;
+      let cwdMissing = null;
+      const handoffPty = pendingAttach.get(tile.id);
+      pendingAttach.delete(tile.id);
+      if (handoffPty) {
+        const res = await window.yusepe.pty.attach(handoffPty);
+        if (res?.ok) {
+          ptyId = handoffPty;
+          attached = true;
+          if (res.buffer) term.write(res.buffer);
+        }
+      }
+      if (!attached) {
+        const created = await window.yusepe.pty.create({
+          cols: term.cols,
+          rows: term.rows,
+          cwd: tile.cwd || undefined,
+          agent: tile.loopAgent || undefined,
+          // La raíz del loop es la del workspace, no la del tile: el tile
+          // puede estar parado en una subcarpeta y `.ybento/loop/` vive en
+          // la raíz del proyecto.
+          loopRoot: state.profile?.cwd || tile.cwd || undefined,
+        });
+        ptyId = created.ptyId;
+        cwdMissing = created.cwdMissing;
+      }
 
-      offData = window.yusepe.pty.onData(ptyId, (data) => term.write(data));
+      offData = window.yusepe.pty.onData(ptyId, (data) => { term.write(data); activity.data(data.length); });
       offExit = window.yusepe.pty.onExit(ptyId, (code) => {
         term.writeln(`\r\n\x1b[2m[proceso finalizado con código ${code}]\x1b[0m`);
       });
@@ -215,15 +263,22 @@ export async function createTerminalTile(tile, profileId) {
       ro.observe(body);
       root._disposers = [() => ro.disconnect()];
 
-      term.writeln('\x1b[2mInicializando shell…\x1b[0m');
-      if (cwdMissing) {
-        term.writeln(`\x1b[33mLa carpeta del workspace no existe: ${cwdMissing}\x1b[0m`);
-        term.writeln('\x1b[33mLa terminal arranca en tu carpeta de usuario.\x1b[0m');
+      if (attached) {
+        // El proceso de adentro no sabe que cambió de ventana: un resize
+        // al tamaño real hace que las TUIs (Claude Code, vim) se repinten.
+        window.yusepe.pty.resize(ptyId, term.cols, term.rows);
+      } else {
+        term.writeln('\x1b[2mInicializando shell…\x1b[0m');
+        if (cwdMissing) {
+          term.writeln(`\x1b[33mLa carpeta del workspace no existe: ${cwdMissing}\x1b[0m`);
+          term.writeln('\x1b[33mLa terminal arranca en tu carpeta de usuario.\x1b[0m');
+        }
       }
       term.focus();
 
-      // Terminal precargada: escribe el comando en el shell apenas arranca.
-      if (tile.command) {
+      // Terminal precargada: escribe el comando en el shell apenas arranca
+      // (no al recibir un traspaso: ese shell ya lo corrió).
+      if (tile.command && !attached) {
         setTimeout(() => window.yusepe.pty.input(ptyId, `${tile.command}\r`), 300);
       }
 
@@ -235,7 +290,8 @@ export async function createTerminalTile(tile, profileId) {
       // terminal, que es lo único que las distingue de verdad cuando son
       // varios shells pelados en la misma carpeta.
       liveTiles.register(tile.id, {
-        profileId, kind: 'terminal', node: root, kill: killReal, meta: { fit, ptyId, term },
+        profileId, kind: 'terminal', node: root, kill: killReal, detach: detachView,
+        meta: { fit, ptyId, term },
       });
 
       // El mismo binding nombre→ptyId que la rama cached rehace al volver
@@ -262,8 +318,19 @@ export async function createTerminalTile(tile, profileId) {
     }
   });
 
+  // Suelta la vista sin tocar el proceso: el pty sigue corriendo en main y
+  // otra ventana se va a enganchar a él (ver liveTiles.release).
+  function detachView() {
+    try { offData?.(); offExit?.(); offTheme?.(); offLoop?.(); offFocused?.(); activity.dispose(); } catch { /* noop */ }
+    ptyId = null;
+    term?.dispose();
+    term = null;
+    (root._disposers || []).forEach((fn) => { try { fn(); } catch { /* noop */ } });
+    root.remove();
+  }
+
   async function killReal() {
-    try { offData?.(); offExit?.(); offTheme?.(); offLoop?.(); } catch { /* noop */ }
+    try { offData?.(); offExit?.(); offTheme?.(); offLoop?.(); offFocused?.(); activity.dispose(); } catch { /* noop */ }
     if (ptyId) { try { window.yusepe.pty.kill(ptyId); } catch { /* noop */ } ptyId = null; }
     term?.dispose();
     term = null;

@@ -77,10 +77,11 @@
         <button
           id="btn-toggle-loop"
           disabled
-          class="inline-flex items-center justify-center w-8 h-8 rounded-md text-fg-muted hover:text-fg hover:bg-bg-elev transition disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-fg-muted"
+          class="relative inline-flex items-center justify-center w-8 h-8 rounded-md text-fg-muted hover:text-fg hover:bg-bg-elev transition disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-fg-muted"
           data-label="Loop — mensajería entre terminales"
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="w-[17px] h-[17px]"><path d="M4 9a4 4 0 0 1 4-4h8a4 4 0 0 1 0 8H8a4 4 0 0 0 0 8h8a4 4 0 0 0 4-4"/><path d="M7 6 4 9l3 3M17 15l3 3-3 3"/></svg>
+          <span id="loop-unread-badge" class="loop-badge hidden" data-no-tip></span>
         </button>
         <button
           id="btn-add-to-space"

@@ -1,5 +1,40 @@
-import { describe, it, expect } from 'vitest';
-import { matchMessages, highlightSegments, initialNavIndex, moveNavIndex, navLabel } from './loopSearch.js';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { matchMessages, highlightSegments, initialNavIndex, moveNavIndex, navLabel, highlightInPlace } from './loopSearch.js';
+
+// ----- Minimal DOM mock for highlightInPlace (no jsdom needed) -----
+function makeEl(tag = 'div') {
+  const el = {
+    tag, nodeType: 1, className: '', textContent: '',
+    childNodes: [],
+    appendChild(n) { el.childNodes.push(n); n.parentNode = el; return n; },
+    replaceChild(newNode, oldNode) {
+      const idx = el.childNodes.indexOf(oldNode);
+      if (idx === -1) return;
+      const inserted = newNode.nodeType === 11 ? newNode.childNodes : [newNode];
+      el.childNodes.splice(idx, 1, ...inserted);
+      inserted.forEach((n) => { n.parentNode = el; });
+      oldNode.parentNode = null;
+    },
+  };
+  return el;
+}
+function makeText(val) { return { nodeValue: val, nodeType: 3, parentNode: null }; }
+function makeFrag() {
+  return {
+    nodeType: 11, childNodes: [],
+    appendChild(n) { this.childNodes.push(n); n.parentNode = this; return n; },
+  };
+}
+let savedDoc;
+beforeAll(() => {
+  savedDoc = global.document;
+  global.document = {
+    createElement: (tag) => makeEl(tag),
+    createTextNode: (val) => makeText(val),
+    createDocumentFragment: () => makeFrag(),
+  };
+});
+afterAll(() => { global.document = savedDoc; });
 
 const msg = (text) => ({
   id: Math.random().toString(36).slice(2),
@@ -117,5 +152,59 @@ describe('navegación — initialNavIndex / moveNavIndex / navLabel', () => {
   it('navLabel con lista vacía → "" (sin "0 de 0" ni NaN)', () => {
     expect(navLabel(-1, 0)).toBe('');
     expect(navLabel(0, 0)).toBe('');
+  });
+});
+
+describe('highlightInPlace', () => {
+  function textContent(el) {
+    if (el.nodeType === 3) return el.nodeValue;
+    return (el.childNodes || []).map(textContent).join('');
+  }
+  function markCount(el) {
+    if (el.nodeType === 1 && el.tag === 'mark') return 1;
+    return (el.childNodes || []).reduce((s, c) => s + markCount(c), 0);
+  }
+
+  it('wraps each match in a <mark> node without innerHTML', () => {
+    const root = makeEl('div');
+    root.appendChild(makeText('hello world hello'));
+    highlightInPlace(root, 'hello');
+    expect(markCount(root)).toBe(2);
+    expect(textContent(root)).toBe('hello world hello');
+  });
+
+  it('query vacía o sólo espacios → no toca el árbol', () => {
+    const root = makeEl('div');
+    root.appendChild(makeText('texto'));
+    highlightInPlace(root, '');
+    highlightInPlace(root, '   ');
+    expect(root.childNodes).toHaveLength(1); // nodo de texto sin tocar
+    expect(markCount(root)).toBe(0);
+  });
+
+  it('nodo sin coincidencias no se modifica', () => {
+    const root = makeEl('div');
+    root.appendChild(makeText('sin coincidencia'));
+    highlightInPlace(root, 'xyz');
+    expect(root.childNodes).toHaveLength(1);
+    expect(root.childNodes[0].nodeValue).toBe('sin coincidencia');
+  });
+
+  it('resalta en nodos de texto anidados (markdown renderizado tiene varios niveles)', () => {
+    const root = makeEl('div');
+    const p = makeEl('p');
+    p.appendChild(makeText('un reporte de prueba'));
+    root.appendChild(p);
+    highlightInPlace(root, 'reporte');
+    expect(markCount(root)).toBe(1);
+    expect(textContent(root)).toBe('un reporte de prueba');
+  });
+
+  it('búsqueda case-insensitive: marca coincidencias con distinta capitalización', () => {
+    const root = makeEl('div');
+    root.appendChild(makeText('Error y error y ERROR'));
+    highlightInPlace(root, 'error');
+    expect(markCount(root)).toBe(3);
+    expect(textContent(root)).toBe('Error y error y ERROR');
   });
 });

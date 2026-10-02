@@ -21,6 +21,7 @@ import { bus } from '../core/eventBus.js';
 import { openModal, closeModal, confirmModal } from './modal.js';
 import * as liveTiles from '../core/liveTiles.js';
 import { focusTileById, getFocusedTileId } from './bentoGrid.js';
+import { pickTerminal } from './terminalPicker.js';
 
 let panelEl = null;
 let listEl = null;
@@ -124,7 +125,7 @@ function snippetRow(snippet) {
 
   return h('div', {
     class: 'group relative px-2 py-1.5 rounded-md hover:bg-bg-elev cursor-pointer border border-transparent hover:border-line transition mb-0.5',
-    title: 'Click para ejecutar en la terminal enfocada',
+    title: 'Click para ejecutar en la terminal enfocada (o elegir cuál, si hay varias)',
     onClick: () => runSnippet(snippet),
   }, [
     h('div', { class: 'flex items-center gap-1.5' }, [
@@ -215,11 +216,24 @@ function toPtyInput(script) {
   return `${lines.join('\r')}\r`;
 }
 
-function runSnippet(snippet) {
+async function runSnippet(snippet) {
   const tiles = state.profile?.tiles || [];
   const focusedId = getFocusedTileId();
-  const target = tiles.find((t) => t.id === focusedId && t.kind === 'terminal')
-    || tiles.find((t) => t.kind === 'terminal');
+  const terminals = tiles.filter((t) => t.kind === 'terminal');
+  let target = terminals.find((t) => t.id === focusedId);
+
+  // Sin terminal enfocada y más de una candidata: silenciosamente elegir
+  // "la primera" es justo lo que manda un comando a donde el usuario no
+  // esperaba. Misma guía visual que el loop al elegir terminal.
+  if (!target && terminals.length > 1) {
+    target = await pickTerminal(terminals, {
+      title: `Ejecutar "${snippet.name}" en…`,
+      hint: 'No hay ninguna terminal enfocada — elegí a cuál mandarle el comando.',
+    });
+    if (!target) return;
+  } else if (!target) {
+    target = terminals[0];
+  }
 
   if (!target) {
     flashStatus('No hay ninguna terminal en este workspace.');

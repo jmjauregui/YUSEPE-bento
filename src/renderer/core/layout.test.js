@@ -13,7 +13,23 @@ import {
   autoScrollStep,
   resolveColGrowthLeft,
   resolveRowGrowthUp,
+  GRID_COLS,
+  autoArrange,
 } from './layout.js';
+
+describe('GRID_COLS', () => {
+  it('el grid tiene 48 columnas', () => {
+    expect(GRID_COLS).toBe(48);
+  });
+
+  it('findEmptySpot usa 48 como ancho por defecto', () => {
+    // Fila 1 ocupada en las 47 primeras columnas: un tile de ancho 2 no cabe
+    // en la columna 48 y baja a la fila 2; uno de ancho 1 sí entra en la 48.
+    const occupied = new Set(Array.from({ length: 47 }, (_, i) => `${i + 1},1`));
+    expect(findEmptySpot(2, 1, occupied)).toEqual({ col: 1, row: 2 });
+    expect(findEmptySpot(1, 1, occupied)).toEqual({ col: 48, row: 1 });
+  });
+});
 
 describe('findEmptySpot', () => {
   it('devuelve la esquina superior izquierda en un grid vacío', () => {
@@ -274,7 +290,8 @@ describe('moveTileTo', () => {
     // A (fila 1) cae sobre B (fila 3). Para B no hay hueco en su fila
     // (D ocupa la izquierda) ni abajo (G1-G3 llenan hasta la fila 10):
     // sin swap terminaría en la fila 11, fuera de lo visible.
-    moveTileTo(tiles, 'A', 7, 3);
+    // El escenario está armado sobre 12 columnas: se pasa explícito.
+    moveTileTo(tiles, 'A', 7, 3, 12);
     expect(tiles.find((t) => t.id === 'A')).toMatchObject({ col: 7, row: 3 });
     expect(tiles.find((t) => t.id === 'B')).toMatchObject({ col: 1, row: 1 });
     // El resto no se movió.
@@ -458,7 +475,7 @@ describe('resolveColGrowthLeft (035)', () => {
   it('vecino sin margen: retrocede al máximo posible', () => {
     // B ocupa la totalidad de su colSpan=2 pegado a A; A no puede desplazarlo más de 1
     const tiles = [t035('A', 5, 1, 3, 2), t035('B', 3, 1, 2, 2)];
-    const r = resolveColGrowthLeft(tiles, 'A', 5);
+    const r = resolveColGrowthLeft(tiles, 'A', 5, 12);
     expect(r).not.toBeNull();
     expect(r.col).toBeGreaterThan(1); // no llega a 1 porque B no cabe
     expect(r.col + r.colSpan - 1).toBe(rightOf(tiles[0])); // borde derecho fijo
@@ -576,5 +593,67 @@ describe('resolveColGrowthLeft / resolveRowGrowthUp (035) — invariantes', () =
     resolveColGrowthLeft(tiles, 'A', 4);
     resolveRowGrowthUp(tiles, 'A', 5);
     tiles.forEach((t, i) => expect(t).toEqual(snap[i]));
+  });
+});
+
+describe('autoArrange (035)', () => {
+  const make = (n) => Array.from({ length: n }, (_, i) => ({ id: `t${i}`, col: 1, row: i * 5 + 1, colSpan: 10, rowSpan: 56 }));
+  const bands = (tiles) => [...new Set(tiles.map((t) => t.row))].map((r) => tiles.filter((t) => t.row === r).length);
+
+  /** Sin solapes, sin huecos y todo dentro de rows × cols. */
+  function expectFills(tiles, rows, cols = GRID_COLS) {
+    const seen = new Set();
+    for (const t of tiles) {
+      expect(t.col + t.colSpan - 1).toBeLessThanOrEqual(cols);
+      expect(t.row + t.rowSpan - 1).toBeLessThanOrEqual(rows);
+      for (let r = t.row; r < t.row + t.rowSpan; r++) {
+        for (let c = t.col; c < t.col + t.colSpan; c++) {
+          const k = `${c},${r}`;
+          expect(seen.has(k)).toBe(false);
+          seen.add(k);
+        }
+      }
+    }
+    expect(seen.size).toBe(rows * cols);
+  }
+
+  it.each([
+    [1, [1]], [2, [2]], [3, [3]], [4, [2, 2]], [5, [3, 2]], [8, [4, 4]],
+  ])('%i tiles en pantalla 16:9 → bandas %j', (n, expected) => {
+    const tiles = make(n);
+    autoArrange(tiles, { rows: 20, aspect: 16 / 9 });
+    expect(bands(tiles)).toEqual(expected);
+    expectFills(tiles, 20);
+  });
+
+  it('rescata tiles más altos que la pantalla (CORPUSIA, rowSpan 56)', () => {
+    const tiles = [
+      { id: 'a', col: 1, row: 1, colSpan: 19, rowSpan: 56 },
+      { id: 'b', col: 30, row: 1, colSpan: 13, rowSpan: 56 },
+    ];
+    autoArrange(tiles, { rows: 20, aspect: 1.8 });
+    expect(tiles.map((t) => t.rowSpan)).toEqual([20, 20]);
+    expectFills(tiles, 20);
+  });
+
+  it('mantiene el orden de lectura', () => {
+    const tiles = [
+      { id: 'abajo', col: 1, row: 10, colSpan: 5, rowSpan: 5 },
+      { id: 'der', col: 20, row: 1, colSpan: 5, rowSpan: 5 },
+      { id: 'izq', col: 1, row: 1, colSpan: 5, rowSpan: 5 },
+    ];
+    autoArrange(tiles, { rows: 20, aspect: 16 / 9 });
+    const byPos = [...tiles].sort((a, b) => a.col - b.col).map((t) => t.id);
+    expect(byPos).toEqual(['izq', 'der', 'abajo']);
+  });
+
+  it('pantalla muy baja: al menos una fila por banda, sin solapes', () => {
+    const tiles = make(8);
+    autoArrange(tiles, { rows: 1, aspect: 1 });
+    expectFills(tiles, Math.max(...tiles.map((t) => t.row + t.rowSpan - 1)));
+  });
+
+  it('sin tiles no hace nada', () => {
+    expect(autoArrange([], { rows: 20 })).toEqual([]);
   });
 });

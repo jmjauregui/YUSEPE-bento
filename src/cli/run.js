@@ -21,7 +21,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import {
-  formatForTerminal, getAgent, inbox, inboxSummary, listAgents, listMessages,
+  findMessage, formatForTerminal, getAgent, inbox, inboxSummary, listAgents, listMessages,
   normalizeName, postMessage, setAgentState, STATES,
 } from '../main/loopOps.js';
 
@@ -30,6 +30,7 @@ const HELP = `ybento — mensajería entre terminales del loop de YUSEPE Bento
   ybento estado                    mi estado, mi bandeja y quién más está en el loop
   ybento estado working            me marco ocupado (arranco una tarea)
   ybento estado waiting            me marco libre (terminé, puedo recibir)
+  ybento leer 42                   leo el mensaje #42 completo (si es mío, quedo working)
   ybento bandeja                   mis mensajes pendientes
   ybento bandeja --ultimo          sólo el último
   ybento enviar @nombre "texto"    le mando un mensaje a otro agente
@@ -197,6 +198,41 @@ export async function run(argv, {
           print(`en el loop: ${others.map((a) =>
             `@${a.name}${a.role ? ` (${a.role})` : ''} [${a.state}]`).join(', ')}`);
         }
+        return 0;
+      }
+
+      case 'leer': {
+        // Lo que resuelve el aviso que pega el repartidor: en la terminal
+        // sólo viaja "leelo con: ybento leer 42", el texto vive acá.
+        const [ref] = rest;
+        if (!ref) return fail('¿Cuál? Ej: ybento leer 42 (el número viene en el aviso)');
+
+        const msg = await findMessage(root, ref);
+        if (!msg) {
+          return fail(`No existe el mensaje ${ref}. `
+            + 'Mirá tus pendientes con: ybento bandeja');
+        }
+
+        // Leer un mensaje propio es empezar a trabajarlo — simétrico con
+        // `enviar`, que te devuelve a waiting. Leer uno ajeno (el hilo es
+        // grupal) no toca ningún estado.
+        let busy = false;
+        if (me && msg.to === me) {
+          try {
+            await setAgentState(root, me, 'working');
+            busy = true;
+          } catch { /* no está registrado: se lee igual */ }
+        }
+
+        if (flags.json) { json({ ...msg, working: busy }); return 0; }
+
+        const re = msg.replyTo ? ` (responde a #${msg.replyTo})` : '';
+        const stamp = msg.commit ? ` [sobre ${msg.commit}${msg.dirty ? ' +sin commitear' : ''}]` : '';
+        print(`#${msg.seq} ${from(msg.from)} ${to(msg.to)}${re}${stamp}`);
+        print('');
+        // Tal cual, con sus saltos: es lo que se perdía al pegarlo en el pty.
+        print(msg.text);
+        if (busy) { print(''); print('Quedaste en working.'); }
         return 0;
       }
 

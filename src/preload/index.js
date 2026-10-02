@@ -3,6 +3,8 @@
  * --------------------------------------------------------------
  * Expone una API mínima y explícita al renderer.
  *   - window.yusepe.profiles  -> CRUD de perfiles
+ *   - window.yusepe.templates -> plantillas de distribución del usuario
+ *   - window.yusepe.workspaces/windows -> workspaces en varias ventanas
  *   - window.yusepe.pty       -> ciclo de vida de la terminal
  *   - window.yusepe.tools     -> detección de CLIs instaladas
  *   - window.yusepe.shell     -> utilidades (abrir URL externa)
@@ -45,6 +47,9 @@ contextBridge.exposeInMainWorld('yusepe', {
     kill: (ptyId) => ipcRenderer.send('pty:kill', { ptyId }),
     onData: (ptyId, handler) => on(`pty:data:${ptyId}`, handler),
     onExit: (ptyId, handler) => on(`pty:exit:${ptyId}`, handler),
+    // Traspaso desde otra ventana: esta se vuelve dueña del pty y recibe
+    // { ok, buffer, shell } (ok:false si el pty ya murió).
+    attach: (ptyId) => ipcRenderer.invoke('pty:attach', { ptyId }),
   },
 
   tools: {
@@ -64,6 +69,9 @@ contextBridge.exposeInMainWorld('yusepe', {
     absPath: (root, relPath) => ipcRenderer.invoke('explorer:abs-path', { root, relPath }),
     readMedia: (root, relPath) => ipcRenderer.invoke('explorer:read-media', { root, relPath }),
     openInSystem: (root, relPath) => ipcRenderer.invoke('explorer:open-in-system', { root, relPath }),
+    watch: (root, relPath) => ipcRenderer.invoke('explorer:watch', { root, relPath }),
+    unwatch: (root, relPath) => ipcRenderer.invoke('explorer:unwatch', { root, relPath }),
+    onChangedOnDisk: (handler) => on('explorer:changed-on-disk', handler),
   },
 
   git: {
@@ -159,6 +167,28 @@ contextBridge.exposeInMainWorld('yusepe', {
     create: (payload) => ipcRenderer.invoke('snippets:create', payload),
     update: (id, patch) => ipcRenderer.invoke('snippets:update', { id, ...patch }),
     delete: (id) => ipcRenderer.invoke('snippets:delete', { id }),
+  },
+
+  // Plantillas de distribución guardadas por el usuario (ver
+  // renderer/core/layoutTemplates.js para las incorporadas).
+  templates: {
+    list: () => ipcRenderer.invoke('templates:list'),
+    create: (payload) => ipcRenderer.invoke('templates:create', payload),
+    delete: (id) => ipcRenderer.invoke('templates:delete', { id }),
+  },
+
+  // Workspaces en varias ventanas (ver main/multiWindow.js).
+  workspaces: {
+    claim: (profileId) => ipcRenderer.invoke('workspace:claim', { profileId }),
+    release: (profileId) => ipcRenderer.invoke('workspace:release', { profileId }),
+    // Otras ventanas crearon/borraron/renombraron un workspace.
+    onChanged: (handler) => on('profiles:changed', handler),
+  },
+  windows: {
+    openWorkspace: (profileId, tileToPty) =>
+      ipcRenderer.invoke('window:open-workspace', { profileId, tileToPty }),
+    focusOwner: (profileId) => ipcRenderer.invoke('window:focus-owner', { profileId }),
+    takeHandoff: (profileId) => ipcRenderer.invoke('handoff:take', { profileId }),
   },
 
   shell: {

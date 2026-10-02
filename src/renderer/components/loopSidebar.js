@@ -33,7 +33,11 @@ import { openModal, closeModal, confirmModal } from './modal.js';
 import { ProfileManager } from '../core/profileManager.js';
 import * as liveTiles from '../core/liveTiles.js';
 import { focusTileById } from './bentoGrid.js';
-import { labelFor } from './workspaceManager.js';
+import { pickTerminal } from './terminalPicker.js';
+import { renderMarkdown } from '../core/markdown.js';
+import {
+  badgeLabel, cursorAtEnd, ensureCursor, saveCursor, unreadSummary,
+} from '../core/loopUnread.js';
 import { applySavedWidth, makeResizeHandle } from '../utils/resizableSidebar.js';
 import { getPanelPosition, panelLayout, ALL_POSITION_CLASSES } from '../core/panelPosition.js';
 import { toast } from './toast.js';
@@ -42,7 +46,7 @@ import { createCopyFeedback } from '../core/copyFeedback.js';
 import { pushObserverThreshold } from '../core/observerSettings.js';
 import { activityState } from '../core/loopActivity.js';
 import { agentDotState } from '../core/agentDot.js';
-import { matchMessages, highlightSegments, initialNavIndex, moveNavIndex, navLabel } from '../core/loopSearch.js';
+import { matchMessages, highlightSegments, highlightInPlace, initialNavIndex, moveNavIndex, navLabel } from '../core/loopSearch.js';
 
 let resizeHandleEl = null;
 
@@ -215,6 +219,15 @@ function savedOpenState(profileId) {
  */
 let lastNotifiedAt = 0;
 
+/**
+ * No leídos del usuario (spec 034). `lastMessages` es la última ventana
+ * leída del disco: "marcar todo como leído" marca hasta ahí, así un mensaje
+ * que llegó y todavía no se vio sigue sin leer.
+ */
+let unread = { count: 0, forUser: false, ids: new Set() };
+let lastMessages = [];
+let markReadBtn = null;
+
 const cwd = () => state.profile?.cwd || null;
 
 function orderFor(c) {
@@ -274,6 +287,7 @@ export function initLoopSidebar() {
     stopBlinkClock();
     // Resetear el designado; se carga async al entrar al workspace.
     observerAgent = null;
+    applyUnread(null);
     if (cwd()) {
       window.yusepe.loop.getObserverAgent(cwd()).then((name) => {
         observerAgent = name;
@@ -281,6 +295,7 @@ export function initLoopSidebar() {
       }).catch(() => {});
       pushObserverThreshold();
       window.yusepe.loop.start(cwd());
+      updateUnread();
     }
     // Restaurar el estado abierto/cerrado guardado para este workspace.
     if (savedOpenState(state.profile?.id)) openSidebar();
@@ -300,11 +315,13 @@ export function initLoopSidebar() {
       window.yusepe.loop.stop(cwd());
     }
   });
-  bus.on('profile:cleared', () => { closeSidebar(); window.yusepe.loop.stop(); });
+  bus.on('profile:cleared', () => { closeSidebar(); window.yusepe.loop.stop(); applyUnread(null); });
 
   // Cambios en disco (los postea el CLI de cada agente, desde otro proceso).
-  window.yusepe.loop.onChanged(() => { if (isOpen) refresh(); checkNotify(); });
-  window.yusepe.loop.onDelivered(() => { if (isOpen) refresh(); checkNotify(); });
+  // Con el panel cerrado, igual hay que actualizar el contador del botón:
+  // es justamente cuando más fácil se pierde un mensaje.
+  window.yusepe.loop.onChanged(() => { if (isOpen) refresh(); else updateUnread(); checkNotify(); });
+  window.yusepe.loop.onDelivered(() => { if (isOpen) refresh(); else updateUnread(); checkNotify(); });
   // Un agente que se cae no genera ningún cambio en disco, así que sin
   // este aviso el panel lo seguiría mostrando en verde.
   window.yusepe.loop.onPresence(({ agent, present }) => {
@@ -335,6 +352,68 @@ async function checkNotify() {
   } catch {
     // No bloquear la UI si la notificación falla
   }
+}
+
+/* ---------- No leídos ---------- */
+
+async function updateUnread() {
+  if (!cwd()) return;
+  try {
+    applyUnread(await window.yusepe.loop.messages(cwd(), { limit: 200 }));
+  } catch { /* el contador no vale romper nada */ }
+}
+
+/**
+ * `null` = limpiar sin tocar el cursor (cambio de workspace, antes de leer
+ * sus mensajes). Con `[]` se fijaría el cursor de un workspace con historial
+ * en "nada leído" y aparecería todo el historial como nuevo.
+ */
+function applyUnread(messages) {
+  lastMessages = messages || [];
+  unread = messages && cwd()
+    ? unreadSummary(messages, ensureCursor(cwd(), messages))
+    : { count: 0, forUser: false, ids: new Set() };
+  paintUnreadBadge();
+  paintUnreadStream();
+  paintMarkReadBtn();
+}
+
+function markAllRead() {
+  if (!cwd()) return;
+  saveCursor(cwd(), cursorAtEnd(lastMessages));
+  applyUnread(lastMessages);
+}
+
+/** Contador en el botón del loop de la barra superior. */
+function paintUnreadBadge() {
+  const badge = document.getElementById('loop-unread-badge');
+  if (!badge) return;
+  badge.textContent = badgeLabel(unread.count);
+  badge.classList.toggle('hidden', !unread.count);
+  // Acento si alguno es para vos; neutro si son sólo charlas entre agentes.
+  badge.classList.toggle('is-user', unread.forUser);
+}
+
+/**
+ * Marcas sobre los nodos ya pintados, sin rehacer el hilo: así marcar todo
+ * como leído no hace perder el scroll ni la selección (spec 023).
+ */
+function paintUnreadStream() {
+  if (!streamEl) return;
+  let first = true;
+  for (const row of streamEl.children) {
+    const is = unread.ids.has(row.dataset.id);
+    row.classList.toggle('is-unread', is);
+    row.classList.toggle('is-unread-user', is && row.dataset.to === 'usuario');
+    row.classList.toggle('is-unread-first', is && first);
+    if (is) first = false;
+  }
+}
+
+function paintMarkReadBtn() {
+  if (!markReadBtn) return;
+  markReadBtn.disabled = !unread.count;
+  markReadBtn.lastChild.textContent = unread.count ? `Marcar leído (${badgeLabel(unread.count)})` : 'Todo leído';
 }
 
 export function isLoopSidebarOpen() {
@@ -463,9 +542,17 @@ function buildChrome() {
     onClick: openSearch,
   }, svgIcon('search', { size: 14 }));
 
+  markReadBtn = h('button', {
+    class: 'inline-flex items-center gap-1 text-[10px] text-fg-muted hover:text-fg px-1.5 py-0.5 rounded shrink-0 '
+      + 'disabled:opacity-40 disabled:hover:text-fg-muted',
+    title: 'Marcar todo como leído',
+    onClick: markAllRead,
+  }, [svgIcon('check', { size: 12 }), h('span', {}, 'Todo leído')]);
+
   const iconRow = h('div', { class: 'flex items-center gap-1.5 px-2 py-1.5' }, [
     title,
     rosterBtnEl,
+    markReadBtn,
     h('button', {
       class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg px-1 shrink-0',
       title: 'Protocolo que leen los agentes (.ybento/loop/skill.md)',
@@ -595,6 +682,7 @@ async function refresh() {
     currentPresence = presence || {};
     renderRoster(ordered, currentPresence);
     renderStream(messages, ordered);
+    applyUnread(messages);
     renderComposer(ordered);
   } catch (err) {
     streamEl.innerHTML = '';
@@ -1101,12 +1189,15 @@ function messageRow(msg, colors = {}, query = '') {
     ? `vos → @${msg.to}`
     : (forMe ? `@${msg.from} → vos` : `@${msg.from} → @${msg.to}`);
 
-  const bodyContent = query
-    ? highlightSegments(msg.text ?? '', query).map((seg) =>
-        seg.match ? h('mark', { class: 'bg-yellow-300/40 text-inherit rounded-sm' }, seg.text) : seg.text,
-      )
-    : (msg.text ?? '');
-  const body = h('div', { class: 'text-xs text-fg whitespace-pre-wrap break-words select-text cursor-text' }, bodyContent);
+  // Los agentes escriben en Markdown. Pasa por el renderizador seguro de la
+  // app (el texto de un agente no puede volverse código): `breaks` porque
+  // sus reportes van línea por línea, y sin imágenes en el hilo.
+  // El buscador aplica DESPUÉS, recorriendo nodos de texto con highlightInPlace
+  // (nunca construyendo HTML: si lo hiciera el texto de un agente volvería a
+  // ser código y rompería la garantía de renderMarkdown).
+  const body = h('div', { class: 'loop-msg prose-bento text-xs text-fg break-words select-text cursor-text' });
+  body.innerHTML = renderMarkdown(msg.text, { breaks: true, images: false });
+  if (query) highlightInPlace(body, query);
 
   // El nombre del emisor va en su color; el resto del encabezado queda
   // apagado. Así el color aparece dos veces (borde y nombre) y se aprende
@@ -1137,7 +1228,7 @@ function messageRow(msg, colors = {}, query = '') {
   // en tema claro y oscuro.
   const bubble = h('div', {
     class: [
-      'group max-w-[85%] rounded-lg px-2.5 py-1.5 border',
+      'group loop-bubble max-w-[85%] rounded-lg px-2.5 py-1.5 border',
       mine
         ? 'bg-accent/15 border-accent/30'
         : (forMe ? 'bg-bg-elev border-accent/20' : 'bg-bg-elev border-line'),
@@ -1147,7 +1238,12 @@ function messageRow(msg, colors = {}, query = '') {
       : null,
   }, parts);
 
-  return h('div', { class: `flex ${mine ? 'justify-end' : 'justify-start'}` }, [bubble]);
+  // data-id / data-to: los usa paintUnreadStream para marcar sin redibujar.
+  return h('div', {
+    class: `loop-row flex ${mine ? 'justify-end' : 'justify-start'}`,
+    'data-id': msg.id,
+    'data-to': msg.to,
+  }, [bubble]);
 }
 
 /**
@@ -1591,62 +1687,8 @@ function renderComposer(agents) {
 
 /* ---------- Alta y edición de agentes ---------- */
 
-/* ---------- Cómo distinguir una terminal de otra ---------- */
-
-/**
- * Mini-mapa del mosaico con este tile marcado.
- *
- * Varias terminales en la misma carpeta y sin comando precargado se ven
- * idénticas en una lista ("Terminal 1", "Terminal 2"…). Lo único que el
- * usuario tiene en la cabeza es *dónde* está cada una en pantalla, así que
- * eso es lo que hay que mostrar.
- */
-function miniMap(tile) {
-  const tiles = state.profile?.tiles || [];
-  const rows = Math.max(4, ...tiles.map((t) => (t.row || 0) + (t.rowSpan || 1)));
-
-  const cells = tiles.map((other) => {
-    const isThis = other.id === tile.id;
-    return h('div', {
-      class: isThis ? 'rounded-[1px] bg-accent' : 'rounded-[1px] bg-fg-subtle/25',
-      style: `grid-column: ${(other.col || 0) + 1} / span ${other.colSpan || 1};`
-        + `grid-row: ${(other.row || 0) + 1} / span ${other.rowSpan || 1};`,
-    });
-  });
-
-  return h('div', {
-    class: 'shrink-0 grid gap-[1px] w-12 h-9 p-[2px] rounded border border-line bg-bg-elev',
-    style: `grid-template-columns: repeat(12, 1fr); grid-template-rows: repeat(${rows}, 1fr);`,
-  }, cells);
-}
-
-/**
- * Última línea con contenido de la terminal.
- *
- * Es lo más identificatorio que hay: el prompt, el comando que corrió, o el
- * banner del agente que tiene adentro. Se lee del buffer de xterm (ver el
- * `meta.term` que registra terminal.js).
- */
-function lastOutputLine(tile) {
-  const entry = liveTiles.get(tile.id);
-  const term = entry?.meta?.term;
-
-  let text = '';
-  try {
-    const buf = term?.buffer?.active;
-    if (buf) {
-      const from = buf.baseY + buf.cursorY;
-      for (let i = from; i >= 0 && i > from - 60; i--) {
-        const line = buf.getLine(i)?.translateToString(true).trim();
-        if (line) { text = line; break; }
-      }
-    }
-  } catch { /* si xterm cambia de API, no vale romper el picker por esto */ }
-
-  return h('div', {
-    class: `text-[10px] truncate mt-0.5 font-mono ${text ? 'text-fg-subtle' : 'text-fg-subtle/50 italic'}`,
-  }, text || 'sin salida todavía');
-}
+// El mini-mapa + última línea para distinguir terminales vive en
+// terminalPicker.js — compartido con snippetsSidebar.js.
 
 /** Terminales del workspace que todavía no están en el loop. */
 function freeTerminals(agents) {
@@ -1672,29 +1714,8 @@ async function openAddAgent() {
     return;
   }
 
-  const list = h('div', { class: 'space-y-1' }, candidates.map((tile) => h('button', {
-    class: 'w-full text-left px-3 py-2 rounded-md border border-line hover:bg-bg-elev transition flex items-center gap-3',
-    onClick: () => { closeModal(); openAgentEditor(null, tile, taken); },
-  }, [
-    miniMap(tile),
-    h('div', { class: 'flex-1 min-w-0' }, [
-      h('div', { class: 'text-sm text-fg flex items-center gap-1.5' }, [
-        h('span', { class: 'text-accent-soft flex items-center shrink-0' }, svgIcon('terminal', { size: 13 })),
-        h('span', { class: 'truncate' }, labelFor(tile)),
-        h('span', { class: 'text-[10px] text-fg-subtle shrink-0' }, `${tile.colSpan}x${tile.rowSpan}`),
-      ]),
-      lastOutputLine(tile),
-    ]),
-  ])));
-
-  openModal({
-    title: 'Elegí la terminal que entra al loop',
-    body: h('div', {}, [
-      h('p', { class: 'text-xs text-fg-subtle mb-3' },
-        'El recuadro marca dónde está cada una en el mosaico, y abajo se ve su última línea.'),
-      list,
-    ]),
-  });
+  const tile = await pickTerminal(candidates, { title: 'Elegí la terminal que entra al loop' });
+  if (tile) openAgentEditor(null, tile, taken);
 }
 
 /**

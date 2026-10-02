@@ -39,6 +39,30 @@ export function kill(tileId) {
   bus.emit('live-tiles:changed');
 }
 
+/**
+ * Suelta un tile SIN matar su proceso: dispone la vista (xterm, DOM,
+ * listeners) y lo saca del registro. Es el paso previo a traspasar el
+ * workspace a otra ventana, que se volverá dueña del pty (ver
+ * main.js detachWorkspace y terminal.js `detach`). Si el tile no sabe
+ * soltarse (webview, calculadora), se mata como siempre.
+ */
+export function release(tileId) {
+  const entry = live.get(tileId);
+  if (!entry) return;
+  if (typeof entry.detach === 'function') {
+    try { entry.detach(); } catch { /* noop */ }
+  } else {
+    try { entry.kill(); } catch { /* noop */ }
+  }
+  live.delete(tileId);
+  bus.emit('live-tiles:changed');
+}
+
+/** [tileId, entry] de todos los tiles vivos de un workspace. */
+export function entriesForProfile(profileId) {
+  return [...live].filter(([, e]) => e.profileId === profileId);
+}
+
 /** Mata TODOS los tiles vivos (terminales + webviews) de un workspace. */
 export function killWorkspace(profileId) {
   let killed = 0;

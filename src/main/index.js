@@ -7,7 +7,7 @@
  * que funcionan incluso cuando un <webview> tiene el foco.
  * --------------------------------------------------------------
  */
-import { app, BrowserWindow, shell, session, ipcMain, Menu, nativeTheme, dialog } from 'electron';
+import { app, BrowserWindow, shell, session, ipcMain, Menu, nativeTheme, dialog, components, systemPreferences } from 'electron';
 import { join, extname } from 'path';
 import { promises as fs } from 'fs';
 import { registerIpc } from './ipc.js';
@@ -25,8 +25,30 @@ const IMAGE_MIME = {
 // __dirname está disponible en CJS (electron-vite compila main a CJS).
 const isDev = !app.isPackaged;
 
+// Carpeta de datos alternativa (perfiles, snippets, plantillas). La usan
+// las pruebas E2E para no tocar los datos reales del usuario; tiene que
+// fijarse antes de `app.whenReady()`.
+if (process.env.YUSEPE_USER_DATA) {
+  app.setPath('userData', process.env.YUSEPE_USER_DATA);
+}
+
 let mainWindow = null;
 let ipcHandle = null;
+/** Todas las ventanas vivas (la principal y las de workspaces sueltos). */
+const windows = new Set();
+
+/** Ventana que originó un evento IPC (o la enfocada, o la principal). */
+function windowFor(event) {
+  const own = event?.sender ? BrowserWindow.fromWebContents(event.sender) : null;
+  return own || BrowserWindow.getFocusedWindow() || mainWindow;
+}
+
+/** Envía un mensaje a todas las ventanas vivas. */
+function broadcast(channel, payload) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(channel, payload);
+  }
+}
 
 /**
  * Muestra el diálogo "Acerca de" con la versión y el historial de commits
@@ -48,17 +70,25 @@ function showAbout(win) {
   });
 }
 
-/** Menu con accelerators globales para atajos de teclado. */
+/**
+ * Menu con accelerators globales para atajos de teclado. Los atajos van a
+ * la ventana ENFOCADA (con varias ventanas abiertas, cada una tiene su
+ * propio workspace activo); `win` solo se usa para el "Acerca de".
+ */
 function setupMenu(win) {
   const isMac = process.platform === 'darwin';
+  const target = () => BrowserWindow.getFocusedWindow() || (win && !win.isDestroyed() ? win : null);
   const send = (ch) => () => {
-    if (win && !win.isDestroyed()) win.webContents.send(ch);
+    const t = target();
+    if (t && !t.isDestroyed()) t.webContents.send(ch);
   };
   const sendTile = (type, dir) => () => {
-    if (win && !win.isDestroyed()) win.webContents.send('menu:tile-action', { type, dir });
+    const t = target();
+    if (t && !t.isDestroyed()) t.webContents.send('menu:tile-action', { type, dir });
   };
   const sendWorkspace = (index) => () => {
-    if (win && !win.isDestroyed()) win.webContents.send('menu:switch-workspace', index);
+    const t = target();
+    if (t && !t.isDestroyed()) t.webContents.send('menu:switch-workspace', index);
   };
 
   const template = [
@@ -82,6 +112,7 @@ function setupMenu(win) {
       label: 'Tile',
       submenu: [
         { label: 'Cerrar tile', accelerator: 'CmdOrCtrl+W', click: send('menu:close-tile') },
+        { label: 'Barra de dirección', accelerator: 'CmdOrCtrl+L', click: sendTile('address-bar') },
         { type: 'separator' },
         { label: 'Ir a archivo…', accelerator: 'CmdOrCtrl+P', click: send('menu:quick-open-file') },
         { label: 'Command Palette', accelerator: 'CmdOrCtrl+Shift+P', click: send('menu:command-palette') },
@@ -155,8 +186,14 @@ function setupMenu(win) {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-function createWindow() {
-  mainWindow = new BrowserWindow({
+/**
+ * Crea una ventana. Sin `profileId` es la ventana principal (lista de
+ * workspaces). Con `profileId`, el renderer arranca directo en ese
+ * workspace: es la ventana que recibe un workspace "soltado" desde otra
+ * (ver window:open-workspace).
+ */
+function createWindow({ profileId = null } = {}) {
+  const win = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 960,
@@ -185,45 +222,96 @@ function createWindow() {
     },
   });
 
+  if (!mainWindow) mainWindow = win;
+  windows.add(win);
+  const wcId = win.webContents.id;
+  win.on('closed', () => {
+    windows.delete(win);
+    if (mainWindow === win) mainWindow = [...windows][0] || null;
+    // Suelta los workspaces de esta ventana y mata sus terminales.
+    ipcHandle?.releaseWindow(wcId);
+  });
+
   if (isDev && process.env.ELECTRON_RENDERER_URL) {
-    mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
+    const url = new URL(process.env.ELECTRON_RENDERER_URL);
+    if (profileId) url.searchParams.set('profile', profileId);
+    win.loadURL(url.toString());
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'));
+    win.loadFile(join(__dirname, '../renderer/index.html'), profileId ? { query: { profile: profileId } } : undefined);
   }
 
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  win.once('ready-to-show', () => win.show());
 
   // En pantalla completa macOS oculta los traffic lights, así que el
   // renderer no debe reservar el hueco de la izquierda de la topbar.
-  const sendFullscreen = (v) => mainWindow.webContents.send('window:fullscreen', v);
-  mainWindow.on('enter-full-screen', () => sendFullscreen(true));
-  mainWindow.on('leave-full-screen', () => sendFullscreen(false));
+  const sendFullscreen = (v) => { if (!win.isDestroyed()) win.webContents.send('window:fullscreen', v); };
+  win.on('enter-full-screen', () => sendFullscreen(true));
+  win.on('leave-full-screen', () => sendFullscreen(false));
   // Los dos de arriba son eventos de *cambio*: si la app arranca ya en
   // pantalla completa (macOS la reabre en su mismo Space) no se dispara
   // ninguno, el renderer nunca se entera y la topbar deja reservado el
   // hueco de unos semáforos que no están — todo corrido 64px a la derecha.
   // Por eso hay que mandar el estado inicial una vez que el renderer cargó.
-  mainWindow.webContents.on('did-finish-load', () => sendFullscreen(mainWindow.isFullScreen()));
+  win.webContents.on('did-finish-load', () => sendFullscreen(win.isFullScreen()));
 
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
 
-  mainWindow.webContents.on('will-navigate', (event, url) => {
+  win.webContents.on('will-navigate', (event, url) => {
     const allowed = process.env.ELECTRON_RENDERER_URL;
     if (allowed && url.startsWith(allowed)) return;
     event.preventDefault();
     if (/^https?:\/\//.test(url)) shell.openExternal(url);
   });
+
+  return win;
+}
+
+// Permisos que un sitio puede pedir. Vale para TODAS las sesiones: la
+// por defecto (la UI de Bento) y las particiones `persist:yusepe-<tile>`
+// de cada webview (ver renderer/components/webviewTile.js), que antes
+// quedaban sin handler.
+//   - `media` (micrófono/cámara, p.ej. Discord, Meet): se permite, y en
+//     macOS antes se le pide el acceso al sistema (TCC). Sin ese pedido
+//     explícito el dispositivo aparece pero entrega silencio.
+const ALLOWED_PERMISSIONS = ['clipboard-sanitized-write', 'clipboard-read', 'fullscreen', 'mediaKeySystem', 'media'];
+
+async function askMediaAccess(mediaTypes = []) {
+  if (process.platform !== 'darwin') return true;
+  let ok = true;
+  for (const kind of ['microphone', 'camera']) {
+    const wanted = kind === 'microphone' ? mediaTypes.includes('audio') : mediaTypes.includes('video');
+    if (!wanted) continue;
+    try {
+      const status = systemPreferences.getMediaAccessStatus(kind);
+      const granted = status === 'granted' ? true : await systemPreferences.askForMediaAccess(kind);
+      if (!granted) { ok = false; console.warn(`[permisos] macOS negó ${kind} (estado previo: ${status})`); }
+    } catch (err) {
+      console.warn(`[permisos] no se pudo consultar ${kind}:`, err?.message || err);
+    }
+  }
+  return ok;
+}
+
+function applyPermissionHandler(ses) {
+  ses.setPermissionRequestHandler((_wc, permission, callback, details) => {
+    if (!ALLOWED_PERMISSIONS.includes(permission)) return callback(false);
+    if (permission === 'media') {
+      askMediaAccess(details?.mediaTypes || []).then(callback, () => callback(false));
+      return;
+    }
+    callback(true);
+  });
 }
 
 function configureSession() {
   const ses = session.defaultSession;
-
-  ses.setPermissionRequestHandler((_wc, permission, callback) => {
-    const allowed = ['clipboard-sanitized-write', 'clipboard-read', 'fullscreen', 'mediaKeySystem'];
-    callback(allowed.includes(permission));
+  applyPermissionHandler(ses);
+  // Las particiones de los webviews se crean después, al montarse cada tile.
+  app.on('session-created', (created) => {
+    if (created !== ses) applyPermissionHandler(created);
   });
 
   ses.webRequest.onHeadersReceived((details, cb) => {
@@ -235,7 +323,7 @@ function configureSession() {
           "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
           "style-src 'self' 'unsafe-inline'; " +
           "img-src 'self' data: blob: https:; " +
-          "frame-src 'self' https:; " +
+          "frame-src 'self' https: blob:; " +
           "connect-src 'self' https: http:;",
         ],
         'X-Content-Type-Options': ['nosniff'],
@@ -244,11 +332,45 @@ function configureSession() {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Electron de castLabs (Widevine): el CDM llega por el component updater;
+  // esperar a `components.whenReady()` fuerza su instalación la primera vez
+  // para que Netflix y similares funcionen desde el primer webview. Con el
+  // Electron oficial `components` no existe y se salta.
+  // No bloquea el arranque: si la instalación falla o tarda (sin red, o
+  // sin firma VMP), la app abre igual y el CDM queda para el próximo intento.
+  if (components?.whenReady) {
+    components.whenReady()
+      .then(() => console.info('[widevine] componentes listos:', JSON.stringify(components.status?.() ?? null)))
+      .catch((err) => console.warn('[widevine] no se pudo instalar el CDM:', err?.message || err));
+  }
   configureSession();
 
   const profilesDir = join(app.getPath('userData'), 'profiles');
-  ipcHandle = registerIpc({ app, profilesDir });
+  ipcHandle = registerIpc({ app, profilesDir, broadcast });
+
+  // -------- Workspaces en ventanas independientes --------
+  // La ventana que suelta un workspace deja el mapa tileId → ptyId; la
+  // nueva lo retira al arrancar (handoff:take) y se vuelve dueña de esos
+  // ptys (pty:attach). Ver renderer/main.js detachWorkspace().
+  ipcMain.handle('window:open-workspace', (event, { profileId, tileToPty }) => {
+    if (!profileId) return { ok: false, reason: 'sin-perfil' };
+    const ownerId = ipcHandle.claims.ownerOf(profileId);
+    if (ownerId != null && ownerId !== event.sender.id) {
+      const owner = BrowserWindow.getAllWindows().find((w) => w.webContents.id === ownerId);
+      if (owner && !owner.isDestroyed()) { owner.focus(); return { ok: false, reason: 'abierto-en-otra-ventana' }; }
+    }
+    ipcHandle.stageHandoff(profileId, tileToPty);
+    createWindow({ profileId });
+    return { ok: true };
+  });
+
+  ipcMain.handle('window:focus-owner', (_e, { profileId }) => {
+    const ownerId = ipcHandle.claims.ownerOf(profileId);
+    const owner = BrowserWindow.getAllWindows().find((w) => w.webContents.id === ownerId);
+    if (owner && !owner.isDestroyed()) { owner.focus(); return true; }
+    return false;
+  });
 
   ipcMain.on('shell:open-external', (_e, url) => {
     if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
@@ -264,9 +386,10 @@ app.whenReady().then(() => {
     nativeTheme.themeSource = mode === 'light' ? 'light' : 'dark';
   });
 
-  ipcMain.handle('dialog:pick-folder', async () => {
-    if (!mainWindow || mainWindow.isDestroyed()) return null;
-    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+  ipcMain.handle('dialog:pick-folder', async (event) => {
+    const win = windowFor(event);
+    if (!win || win.isDestroyed()) return null;
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
       properties: ['openDirectory', 'createDirectory'],
     });
     return canceled || !filePaths.length ? null : filePaths[0];
@@ -275,9 +398,10 @@ app.whenReady().then(() => {
   // Imagen local para wallpaper: se lee y codifica a data URL acá mismo
   // (no se guarda la ruta) para que el perfil quede autocontenido y no
   // se rompa si el archivo original se mueve o se borra después.
-  ipcMain.handle('dialog:pick-image', async () => {
-    if (!mainWindow || mainWindow.isDestroyed()) return null;
-    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+  ipcMain.handle('dialog:pick-image', async (event) => {
+    const win = windowFor(event);
+    if (!win || win.isDestroyed()) return null;
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
       properties: ['openFile'],
       filters: [{ name: 'Imágenes', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }],
     });
@@ -298,11 +422,12 @@ app.whenReady().then(() => {
   // Export/import de perfiles como JSON portable (necesitan diálogos
   // nativos con `mainWindow`, por eso viven acá y no en ipc.js — mismo
   // criterio que dialog:pick-folder/pick-image).
-  ipcMain.handle('profiles:export', async (_e, { id }) => {
-    if (!mainWindow || mainWindow.isDestroyed()) return { canceled: true };
+  ipcMain.handle('profiles:export', async (event, { id }) => {
+    const win = windowFor(event);
+    if (!win || win.isDestroyed()) return { canceled: true };
     const profile = await ipcHandle.storage.load(id);
     const safeName = (profile.name || 'workspace').replace(/[\\/:*?"<>|]/g, '_');
-    const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+    const { canceled, filePath } = await dialog.showSaveDialog(win, {
       defaultPath: `${safeName}.yusepe-bento.json`,
       filters: [{ name: 'YUSEPE Bento Workspace', extensions: ['json'] }],
     });
@@ -311,9 +436,10 @@ app.whenReady().then(() => {
     return { canceled: false, filePath };
   });
 
-  ipcMain.handle('profiles:import', async () => {
-    if (!mainWindow || mainWindow.isDestroyed()) return { canceled: true };
-    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+  ipcMain.handle('profiles:import', async (event) => {
+    const win = windowFor(event);
+    if (!win || win.isDestroyed()) return { canceled: true };
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
       properties: ['openFile'],
       filters: [{ name: 'YUSEPE Bento Workspace', extensions: ['json'] }],
     });
@@ -329,6 +455,7 @@ app.whenReady().then(() => {
       throw new Error('El archivo no tiene el formato de un workspace de YUSEPE Bento.');
     }
     const profile = await ipcHandle.storage.importProfile(parsed);
+    broadcast('profiles:changed');
     return { canceled: false, profile };
   });
 
