@@ -20,27 +20,6 @@ export function matchMessages(messages, query) {
 }
 
 /**
- * Devuelve todos los tramos del texto, en orden. Concatenarlos reconstruye
- * el texto original. Los tramos con `match: true` son las coincidencias.
- * Consulta vacÃ­a â†’ un solo tramo con match: false.
- */
-export function highlightSegments(text, query) {
-  if (!query || !query.trim()) return [{ text, match: false }];
-  const escaped = escapeRegExp(query.trim());
-  const re = new RegExp(escaped, 'gi');
-  const segments = [];
-  let lastIndex = 0;
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    if (m.index > lastIndex) segments.push({ text: text.slice(lastIndex, m.index), match: false });
-    segments.push({ text: m[0], match: true });
-    lastIndex = m.index + m[0].length;
-  }
-  if (lastIndex < text.length) segments.push({ text: text.slice(lastIndex), match: false });
-  return segments.length ? segments : [{ text, match: false }];
-}
-
-/**
  * Índice inicial de navegación: el último resultado (el más reciente, abajo).
  * -1 si no hay resultados.
  */

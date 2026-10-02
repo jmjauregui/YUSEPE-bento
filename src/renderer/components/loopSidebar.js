@@ -46,7 +46,7 @@ import { createCopyFeedback } from '../core/copyFeedback.js';
 import { pushObserverThreshold } from '../core/observerSettings.js';
 import { activityState } from '../core/loopActivity.js';
 import { agentDotState } from '../core/agentDot.js';
-import { matchMessages, highlightSegments, highlightInPlace, initialNavIndex, moveNavIndex, navLabel } from '../core/loopSearch.js';
+import { matchMessages, highlightInPlace, initialNavIndex, moveNavIndex, navLabel } from '../core/loopSearch.js';
 
 let resizeHandleEl = null;
 

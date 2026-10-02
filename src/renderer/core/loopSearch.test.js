@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { matchMessages, highlightSegments, initialNavIndex, moveNavIndex, navLabel, highlightInPlace } from './loopSearch.js';
+import { matchMessages, initialNavIndex, moveNavIndex, navLabel, highlightInPlace } from './loopSearch.js';
 
 // ----- Minimal DOM mock for highlightInPlace (no jsdom needed) -----
 function makeEl(tag = 'div') {
@@ -68,10 +68,6 @@ describe('matchMessages', () => {
     const results = matchMessages(msgs, '(con');
     expect(results).toHaveLength(1);
     expect(results[0].text).toBe('precio (con IVA)');
-    // highlightSegments también debe tratar el texto como literal
-    expect(() => highlightSegments('precio (con IVA)', '(')).not.toThrow();
-    const segs = highlightSegments('(test) y (test)', '(test)');
-    expect(segs.filter((s) => s.match)).toHaveLength(2);
   });
 
   it('conserva el orden del hilo', () => {
@@ -91,35 +87,6 @@ describe('matchMessages', () => {
     expect(results[0].text).toBe('visible');
     // Con query que no coincide con ninguno de los dos
     expect(matchMessages(msgs, 'nada')).toHaveLength(0);
-  });
-});
-
-describe('highlightSegments', () => {
-  it('mensaje con dos coincidencias → devuelve los dos tramos con match:true', () => {
-    const segs = highlightSegments('uno dos uno', 'uno');
-    const matches = segs.filter((s) => s.match);
-    expect(matches).toHaveLength(2);
-    expect(matches[0].text.toLowerCase()).toBe('uno');
-    expect(matches[1].text.toLowerCase()).toBe('uno');
-  });
-
-  it('coincidencia al principio y al final → tramos correctos, sin vacíos espurios', () => {
-    const segs = highlightSegments('ababab', 'ab');
-    expect(segs.every((s) => s.text.length > 0)).toBe(true);
-    expect(segs.filter((s) => s.match)).toHaveLength(3);
-  });
-
-  it('concatenar los tramos reconstruye el texto original', () => {
-    const text = 'El buscador encuentra texto en el hilo del loop.';
-    const segs = highlightSegments(text, 'texto');
-    expect(segs.map((s) => s.text).join('')).toBe(text);
-  });
-
-  it('coincidencia que es todo el texto → un solo tramo con match:true', () => {
-    const segs = highlightSegments('todo', 'todo');
-    expect(segs).toHaveLength(1);
-    expect(segs[0].match).toBe(true);
-    expect(segs[0].text).toBe('todo');
   });
 });
 
@@ -206,5 +173,45 @@ describe('highlightInPlace', () => {
     highlightInPlace(root, 'error');
     expect(markCount(root)).toBe(3);
     expect(textContent(root)).toBe('Error y error y ERROR');
+  });
+
+  // Mutación A: aplanar el marcado — si <strong> se convirtiera en texto plano,
+  // el nodo element desaparecería del árbol.
+  it('no aplana elementos: <strong> dentro del árbol sigue siendo element después de resaltar', () => {
+    const root = makeEl('div');
+    const strong = makeEl('strong');
+    strong.appendChild(makeText('hello'));
+    root.appendChild(makeText('say '));
+    root.appendChild(strong);
+    root.appendChild(makeText(' world'));
+    highlightInPlace(root, 'hello');
+    const strongNode = root.childNodes.find((n) => n.nodeType === 1 && n.tag === 'strong');
+    expect(strongNode).toBeDefined();
+    expect(textContent(root)).toBe('say hello world');
+    expect(markCount(root)).toBe(1);
+  });
+
+  // Mutación B: cortar en el primer nodo de texto — si sólo se procesara el primer
+  // nodo hermano, el segundo texto no se marcaría.
+  it('dos nodos de texto hermanos separados por un elemento → dos marks independientes', () => {
+    const root = makeEl('div');
+    root.appendChild(makeText('error'));
+    const em = makeEl('em');
+    em.appendChild(makeText(' y '));
+    root.appendChild(em);
+    root.appendChild(makeText('error'));
+    highlightInPlace(root, 'error');
+    expect(markCount(root)).toBe(2);
+    expect(textContent(root)).toBe('error y error');
+  });
+
+  // Mutación C: RegExp sin escapar — sin escapeRegExp, new RegExp('(', 'gi') tira
+  // SyntaxError en medio del render, sin ningún test que lo detecte.
+  it('consulta "(" literal: no tira excepción y marca la coincidencia', () => {
+    const root = makeEl('div');
+    root.appendChild(makeText('precio (con IVA)'));
+    expect(() => highlightInPlace(root, '(')).not.toThrow();
+    expect(markCount(root)).toBe(1);
+    expect(textContent(root)).toBe('precio (con IVA)');
   });
 });
