@@ -635,8 +635,11 @@
   }
 
   /* ---- Compositor flotante (045) ---- */
-  /* El hilo recibe padding inferior dinámico; el fallback cubre el compositor vacío. */
-  .loop-stream { padding-bottom: var(--loop-composer-h, 5.5rem); }
+  /* El hilo recibe padding inferior dinámico; el fallback cubre el compositor vacío.
+     id en el selector: Tailwind genera .py-2 (misma especificidad) después de esta
+     regla en el bundle, así que sin el id la variable CSS gana el parse pero pierde
+     la cascada — el padding nunca se aplica. */
+  #loop-sidebar .loop-stream { padding-bottom: var(--loop-composer-h, 5.5rem); }
   /* Lateral: sale del flujo y flota al pie del panel (panelEl es position:fixed
      = contexto de posicionamiento). streamEl (flex-1) se estira hasta el fondo. */
   .loop-composer {

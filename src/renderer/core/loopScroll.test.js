@@ -23,6 +23,10 @@ describe('composerPad', () => {
   it('relleno topado a streamH × maxRatio para no comerse la vista', () => {
     expect(composerPad(300, { streamH: 400 })).toBe(240);
   });
+
+  it('resultado entero también en el camino topado (streamH × maxRatio puede ser fracción)', () => {
+    expect(Number.isInteger(composerPad(300.4, { streamH: 401 }))).toBe(true);
+  });
 });
 
 describe('isAtBottom', () => {
