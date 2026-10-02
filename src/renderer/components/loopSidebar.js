@@ -49,6 +49,7 @@ import { pushObserverThreshold } from '../core/observerSettings.js';
 import { activityState } from '../core/loopActivity.js';
 import { agentDotState } from '../core/agentDot.js';
 import { matchMessages, highlightInPlace, initialNavIndex, moveNavIndex, navLabel } from '../core/loopSearch.js';
+import { composerPad, isAtBottom } from '../core/loopScroll.js';
 
 let resizeHandleEl = null;
 
@@ -145,6 +146,7 @@ let lastRosterAlert = null;
 let accordion = null;
 let streamEl = null;
 let composerEl = null;
+let composerRO = null;   // ResizeObserver sobre composerEl (045)
 let emptyEl = null;
 let isOpen = false;
 
@@ -484,6 +486,7 @@ function openSidebar({ animate = true } = {}) {
   // Al restaurar un workspace no se anima (no fue un gesto del usuario).
   if (getLoopOpenView() === 'expanded' && !isExpanded) setExpanded(true, { animate });
   accordion?.open();
+  if (composerRO && composerEl) composerRO.observe(composerEl);
   // Recargar el orden al abrir el panel (cubre el caso de que el workspace
   // estuviera cargado pero el panel cerrado cuando se guardó el orden).
   loadOrder().then(() => refresh());
@@ -510,6 +513,7 @@ function closeSidebar() {
   if (searchInputEl) searchInputEl.value = '';
   // Parar el reloj del titileo: nada titila con el panel cerrado.
   stopBlinkClock();
+  composerRO?.disconnect();
 }
 
 /* ---------- Posición del panel (038) ---------- */
@@ -874,6 +878,8 @@ function unmountRight() {
 /* ---------- Estructura ---------- */
 
 function buildChrome() {
+  composerRO?.disconnect();
+  composerRO = null;
   panelEl.innerHTML = '';
   // Resetear estado persistente: el DOM fue destruido, hay que recrearlo.
   currentAgents = []; composerBoxEl = null; pillsContainerEl = null;
@@ -1060,6 +1066,18 @@ function buildChrome() {
   resizeHandleEl = null; // applyPanelPosition lo recreará
   panelEl.append(header, rosterEl, streamEl, emptyEl, composerEl, leftEl, rightEl, leftHandle, rightHandle);
   panelEl.classList.add('flex', 'flex-col');
+
+  // ResizeObserver sobre composerEl (045): publica --loop-composer-h y, si
+  // el usuario estaba al fondo, lo mantiene ahí cuando el compositor crece.
+  // wasAtBottom se mide ANTES de escribir la variable: el padding nuevo
+  // mueve el fondo y la medición posterior sería siempre "no estaba al fondo".
+  composerRO = new ResizeObserver(() => {
+    const wasAtBottom = isAtBottom(streamEl);
+    const pad = composerPad(composerEl.offsetHeight, { streamH: streamEl.clientHeight });
+    panelEl.style.setProperty('--loop-composer-h', `${pad}px`);
+    if (wasAtBottom) streamEl.scrollTop = streamEl.scrollHeight;
+  });
+  composerRO.observe(composerEl);
 }
 
 async function refresh() {
@@ -1486,7 +1504,7 @@ function renderStream(messages, agents) {
   if (forceBottom) forceBottomNextRender = false;
 
   // Calcular ANTES de tocar el DOM: innerHTML='' recorta scrollTop a 0.
-  const atBottom = forceBottom || (streamEl.scrollHeight - streamEl.scrollTop - streamEl.clientHeight < 40);
+  const atBottom = forceBottom || isAtBottom(streamEl);
 
   if (!messages.length) {
     // Vacío explícito: sin esto los nodos persistentes quedan como fantasmas.

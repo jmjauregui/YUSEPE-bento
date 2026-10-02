@@ -510,18 +510,19 @@
     height: auto !important; /* pisa el alto guardado (eje y — panel arriba/abajo) */
     border: none;        /* neutraliza border-left/right/top/bottom según posición */
     grid-template-columns: var(--loop-left-w, 280px) minmax(0, 1fr) var(--loop-right-w, 380px);
-    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    grid-template-rows: auto auto minmax(0, 1fr);
     grid-template-areas:
       "header header   header"
       "roster stream   right"
-      "left   stream   right"
-      "left   composer right";
+      "left   stream   right";
   }
   #loop-sidebar.is-expanded .loop-header   { grid-area: header; }
   #loop-sidebar.is-expanded .loop-roster   { grid-area: roster; border-right: 1px solid var(--color-line); }
   #loop-sidebar.is-expanded .loop-stream,
   #loop-sidebar.is-expanded .loop-empty    { grid-area: stream; }
-  #loop-sidebar.is-expanded .loop-composer { grid-area: composer; }
+  /* Expandida: comparte la celda del hilo; position:static deshace el
+     absolute de la vista lateral (sin él taparía las columnas laterales). */
+  #loop-sidebar.is-expanded .loop-composer { grid-area: stream; align-self: end; position: static; }
   #loop-sidebar.is-expanded .loop-left {
     grid-area: left;
     display: flex;
@@ -544,7 +545,7 @@
     transition: background 0.12s;
   }
   #loop-sidebar.is-expanded .loop-splitter[data-axis='col'] {
-    grid-row: 2 / 5;
+    grid-row: 2 / 4;
     width: 7px;
     cursor: col-resize;
   }
@@ -632,6 +633,30 @@
     border-color: rgb(var(--color-accent-rgb) / 0.45);
     box-shadow: 0 1px 2px rgb(0 0 0 / 0.12), 0 6px 24px rgb(0 0 0 / 0.16);
   }
+
+  /* ---- Compositor flotante (045) ---- */
+  /* El hilo recibe padding inferior dinámico; el fallback cubre el compositor vacío. */
+  .loop-stream { padding-bottom: var(--loop-composer-h, 5.5rem); }
+  /* Lateral: sale del flujo y flota al pie del panel (panelEl es position:fixed
+     = contexto de posicionamiento). streamEl (flex-1) se estira hasta el fondo. */
+  .loop-composer {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    z-index: 2;
+    pointer-events: none;
+    /* Degradado: transparente arriba (sin línea de corte) → velo ≥60 % abajo
+       (la franja de la leyenda, donde los mensajes pasan por detrás). */
+    background: linear-gradient(
+      to bottom,
+      transparent 0%,
+      color-mix(in srgb, var(--color-bg-soft) 70%, transparent) 35%
+    );
+    backdrop-filter: blur(10px) saturate(180%);
+  }
+  /* La caja de escritura y la barra de herramientas reciben eventos;
+     el envoltorio no, para que la rueda del mouse scrollee el hilo. */
+  .loop-composer .loop-input { pointer-events: auto; }
+
   .loop-send {
     width: 30px;
     height: 30px;
