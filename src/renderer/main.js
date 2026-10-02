@@ -566,6 +566,7 @@ window.yusepe.menu.onAddToSpace(() => openAddToSpace());
 window.yusepe.menu.onNewTerminal(() => TileFactory.terminal(state.profile?.cwd));
 window.yusepe.menu.onNewCalc(() => TileFactory.calculator());
 window.yusepe.menu.onSettings(() => openSettings());
+window.yusepe.menu.onToggleLoop(() => toggleLoopSidebar());
 
 // Navegación por teclado del mosaico (Cmd+Alt+Flecha = foco,
 // Cmd+Alt+Shift+Flecha = mover). Ver components/bentoGrid.js.

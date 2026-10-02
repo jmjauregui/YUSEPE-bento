@@ -11,12 +11,44 @@ import { openModal, closeModal } from './modal.js';
 import { getTheme, applyTheme } from '../core/theme.js';
 import { buildWallpaperSection } from './wallpaperPicker.js';
 import { SOUNDS, getSound, setSound, playSound } from '../core/loopNotify.js';
-import { getLoopMode, setLoopMode } from './loopSidebar.js';
+import { getLoopMode, setLoopMode, getLoopOpenView, setLoopOpenView } from './loopSidebar.js';
 import { autoArrangeTiles } from './bentoGrid.js';
 import { state } from '../core/state.js';
 import { toast } from './toast.js';
 
 export function openSettings() {
+  // Layout estilo Ajustes de macOS: grupos con filas "nombre a la izquierda,
+  // control a la derecha". Las opciones excluyentes son <select> y no listas
+  // de radios: con 6 sonidos y 2 modos, los radios se comían el modal.
+  const SELECT_CLASS = 'bg-bg-elev border border-line rounded-md text-xs text-fg px-2 py-1.5 '
+    + 'focus:outline-none focus:ring-1 focus:ring-accent cursor-pointer';
+
+  function row(label, hint, control) {
+    return h('div', { class: 'flex items-center justify-between gap-4 py-2.5' }, [
+      h('div', { class: 'min-w-0' }, [
+        h('div', { class: 'text-sm text-fg' }, label),
+        ...(hint ? [hint instanceof Node ? hint
+          : h('div', { class: 'text-[11px] text-fg-subtle leading-relaxed mt-0.5' }, hint)] : []),
+      ]),
+      h('div', { class: 'shrink-0 flex items-center gap-1.5' }, control),
+    ]);
+  }
+
+  function group(title, rows) {
+    return h('section', { class: 'mb-5' }, [
+      h('h3', { class: 'text-[11px] uppercase tracking-wide text-fg-subtle mb-1.5' }, title),
+      h('div', { class: 'rounded-lg border border-line px-3 divide-y divide-line' }, rows),
+    ]);
+  }
+
+  function select(options, current, onChange) {
+    const el = h('select', { class: SELECT_CLASS }, options.map(([value, label]) =>
+      h('option', { value }, label)));
+    el.value = current;
+    el.addEventListener('change', () => onChange(el.value));
+    return el;
+  }
+
   function themeButton(mode, iconName, label) {
     const active = getTheme() === mode;
     return h('button', {
@@ -29,135 +61,75 @@ export function openSettings() {
     }, [svgIcon(iconName, { size: 14 }), h('span', {}, label)]);
   }
 
-  const themeRow = h('div', { class: 'flex items-center justify-between mb-4' }, [
-    h('span', { class: 'text-sm text-fg' }, 'Tema'),
-    h('div', { class: 'flex gap-1' }, [
-      themeButton('dark', 'moon', 'Oscuro'),
-      themeButton('light', 'sun', 'Claro'),
-    ]),
-  ]);
+  const themeRow = row('Tema', null, [themeButton('dark', 'moon', 'Oscuro'), themeButton('light', 'sun', 'Claro')]);
 
-  function buildLoopModeSection() {
-    const MODES = [
-      {
-        id: 'single',
-        label: 'Un loop a la vez',
-        desc: 'Al cambiar de espacio, el loop del anterior se pausa.',
-      },
-      {
-        id: 'multi',
-        label: 'Loops simultáneos',
-        desc: 'Los agentes de todos los espacios siguen activos aunque no estés ahí.',
-      },
-    ];
-
-    let currentMode = getLoopMode();
-
-    const rows = MODES.map((mode) => {
-      const radio = h('input', {
-        type: 'radio',
-        name: 'loop-mode',
-        value: mode.id,
-        class: 'w-3 h-3 mt-0.5 shrink-0 cursor-pointer',
-        style: 'accent-color: var(--color-accent)',
-      });
-      if (mode.id === currentMode) radio.checked = true;
-
-      radio.addEventListener('change', () => {
-        currentMode = mode.id;
-        setLoopMode(mode.id);
-      });
-
-      return h('label', {
-        class: 'flex items-start gap-2 py-1 cursor-pointer select-none',
-      }, [
-        radio,
-        h('div', {}, [
-          h('div', { class: 'text-xs text-fg' }, mode.label
-            + (mode.id === 'single' ? ' (predeterminado)' : '')),
-          h('div', { class: 'text-[10px] text-fg-subtle leading-relaxed mt-0.5' }, mode.desc),
-        ]),
-      ]);
-    });
-
-    return h('div', {}, [
-      h('span', { class: 'text-sm text-fg block mb-1' }, 'Modo del loop'),
-      h('div', { class: 'space-y-1' }, rows),
-    ]);
+  function loopModeRow() {
+    const DESCS = {
+      single: 'Al cambiar de espacio, el loop del anterior se pausa.',
+      multi: 'Los agentes de todos los espacios siguen activos aunque no estés ahí.',
+    };
+    const hint = h('div', { class: 'text-[11px] text-fg-subtle leading-relaxed mt-0.5' }, DESCS[getLoopMode()]);
+    const control = select(
+      [['single', 'Un loop a la vez'], ['multi', 'Loops simultáneos']],
+      getLoopMode(),
+      (mode) => { setLoopMode(mode); hint.textContent = DESCS[mode]; },
+    );
+    return row('Modo del loop de agentes', hint, [control]);
   }
 
-  function buildSoundSection() {
-    let currentId = getSound();
-
-    const rows = SOUNDS.map((sound) => {
-      const radio = h('input', {
-        type: 'radio',
-        name: 'loop-sound',
-        value: sound.id,
-        class: 'w-3 h-3 cursor-pointer',
-        style: 'accent-color: var(--color-accent)',
-      });
-      if (sound.id === currentId) radio.checked = true;
-
-      radio.addEventListener('change', () => {
-        currentId = sound.id;
-        setSound(sound.id);
-      });
-
-      const previewBtn = sound.id !== 'none'
-        ? h('button', {
-          class: 'ml-auto text-[10px] text-fg-muted hover:text-fg transition px-1',
-          title: 'Escuchar',
-          onClick: (e) => { e.preventDefault(); playSound(sound.id); },
-        }, '▶')
-        : null;
-
-      return h('label', {
-        class: 'flex items-center gap-2 py-1 cursor-pointer select-none',
-      }, [radio, h('span', { class: 'text-xs text-fg' }, sound.label), ...(previewBtn ? [previewBtn] : [])]);
-    });
-
-    return h('div', {}, [
-      h('div', { class: 'flex items-center justify-between mb-1' }, [
-        h('span', { class: 'text-sm text-fg' }, 'Notificaciones del loop'),
-      ]),
-      h('p', { class: 'text-[11px] text-fg-subtle mb-2 leading-relaxed' },
-        'Sonido cuando un agente te escribe a vos en el loop. Usá ▶ para preescuchar.'),
-      h('div', { class: 'space-y-0.5' }, rows),
-    ]);
+  function openViewRow() {
+    const control = select(
+      [['side', 'Panel lateral'], ['expanded', 'Expandido (pantalla completa)']],
+      getLoopOpenView(),
+      (view) => setLoopOpenView(view),
+    );
+    return row('Abrir el loop de agentes', 'Cómo aparece al abrirlo. Siempre podés cambiar con Expandir / Contraer.', [control]);
   }
 
-  // Reordenar (spec 035): junto al fondo, porque es "cómo se ve este espacio".
-  function buildArrangeSection() {
+  function soundRow() {
+    const preview = h('button', {
+      class: 'inline-flex items-center justify-center w-7 h-7 rounded-md border border-line text-[10px] '
+        + 'text-fg-muted hover:text-fg hover:bg-bg-elev transition disabled:opacity-40',
+      title: 'Escuchar',
+      onClick: () => playSound(control.value),
+    }, '▶');
+    const control = select(SOUNDS.map((x) => [x.id, x.label]), getSound(), (id) => {
+      setSound(id);
+      preview.disabled = id === 'none';
+      if (id !== 'none') playSound(id);
+    });
+    preview.disabled = control.value === 'none';
+    return row('Sonido de aviso', 'Cuando un agente te escribe a vos en el loop.', [control, preview]);
+  }
+
+  // Reordenar (spec 035): en "Este espacio", arriba del fondo para que se
+  // vea sin scrollear.
+  function arrangeRow() {
     const count = state.profile?.tiles?.length || 0;
-    return h('div', { class: 'flex items-start justify-between gap-3' }, [
-      h('div', {}, [
-        h('span', { class: 'text-sm text-fg block mb-1' }, 'Reordenar tiles'),
-        h('p', { class: 'text-[11px] text-fg-subtle leading-relaxed' },
-          'Reparte los tiles en una grilla pareja que llena la pantalla. Las terminales siguen '
-          + 'vivas; el acomodo manual actual se pierde. Sirve también si un tile quedó fuera de la vista.'),
-      ]),
-      h('button', {
-        class: 'shrink-0 inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border border-line '
-          + 'hover:bg-bg-elev transition disabled:opacity-40 disabled:cursor-not-allowed',
+    return row('Reordenar tiles',
+      'Grilla pareja que llena la pantalla. Las terminales siguen vivas; el acomodo manual se pierde.',
+      [h('button', {
+        // Rojo: destaca la función y avisa que pisa el acomodo manual.
+        class: 'inline-flex items-center gap-1.5 text-xs font-medium text-white px-2.5 py-1.5 rounded-md '
+          + 'bg-red-500 hover:bg-red-600 transition disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-red-500',
         disabled: !count,
         onClick: () => {
           if (autoArrangeTiles()) toast.success(`${count} tile${count === 1 ? '' : 's'} reordenado${count === 1 ? '' : 's'}`);
         },
-      }, [svgIcon('grid', { size: 14 }), h('span', {}, 'Reordenar')]),
-    ]);
+      }, [svgIcon('grid', { size: 14 }), h('span', {}, 'Reordenar')])]);
   }
 
   const body = h('div', {}, [
-    themeRow,
-    h('div', { class: 'border-t border-line my-4' }),
-    buildLoopModeSection(),
-    h('div', { class: 'border-t border-line my-4' }),
-    buildSoundSection(),
-    h('div', { class: 'border-t border-line my-4' }),
-    h('label', { class: 'text-sm text-fg block mb-1' }, 'Fondo de este espacio'),
-    buildWallpaperSection(),
-    ...(state.profile ? [h('div', { class: 'border-t border-line my-4' }), buildArrangeSection()] : []),
+    group('General', [themeRow, loopModeRow(), openViewRow(), soundRow()]),
+    state.profile
+      ? group('Este espacio', [
+        arrangeRow(),
+        h('div', { class: 'py-2.5' }, [
+          h('div', { class: 'text-sm text-fg mb-2' }, 'Fondo'),
+          buildWallpaperSection(),
+        ]),
+      ])
+      : h('p', { class: 'text-xs text-fg-subtle' }, 'Abrí un espacio de trabajo para configurar su fondo y su distribución.'),
   ]);
 
   openModal({ title: 'Configuración', body, size: 'lg' });

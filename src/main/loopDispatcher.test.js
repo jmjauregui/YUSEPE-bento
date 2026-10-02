@@ -14,7 +14,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
-import { createDispatcher } from './loopDispatcher.js';
+import { bracketedPasteState, createDispatcher, PASTE_END, PASTE_START } from './loopDispatcher.js';
 import { getAgent, inbox, listMessages, markDelivered, postMessage, registerAgent, setAgentState } from './loopOps.js';
 import { createWriteQueue } from './ptyWriteQueue.js';
 
@@ -512,4 +512,44 @@ describe('sincronización del Enter con el drenaje de la cola', () => {
       await fs.rm(testCwd, { recursive: true, force: true });
     }
   }, 10_000);
+});
+
+// Regresión de campo (2 oct 2026): Claude Code tomó el Enter de un aviso de
+// 310 chars como un salto de línea más del pegado y el mensaje quedó sin
+// enviar. Con bracketed paste el TUI sabe dónde termina el pegado.
+describe('bracketed paste', () => {
+  it('si el programa lo pidió, el aviso va envuelto y el Enter aparte, afuera', async () => {
+    await dispatcher.dispose();
+    dispatcher = createDispatcher({
+      writeToPty: writes.write, submitDelayMs: 0, pollMs: 60_000, watchFs: false,
+      isBracketedPaste: (ptyId) => ptyId === 'pty_claudio',
+    });
+    start();
+    dispatcher.bind('claudio', 'pty_claudio', cwd);
+    await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'hola' });
+    await dispatcher.tick();
+
+    expect(writes.log).toHaveLength(2);
+    expect(writes.log[0].data.startsWith(PASTE_START)).toBe(true);
+    expect(writes.log[0].data.endsWith(PASTE_END)).toBe(true);
+    expect(writes.log[0].data).toContain('ybento leer 1');
+    expect(writes.log[1].data).toBe('\r');
+  });
+
+  it('si no lo pidió, el aviso va crudo como siempre', async () => {
+    start();
+    dispatcher.bind('claudio', 'pty_claudio', cwd);
+    await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'hola' });
+    await dispatcher.tick();
+
+    expect(writes.log[0].data).not.toContain(PASTE_START);
+  });
+
+  it('bracketedPasteState sigue la última secuencia del programa', () => {
+    expect(bracketedPasteState(false, 'prompt\x1b[?2004h')).toBe(true);
+    expect(bracketedPasteState(true, 'salida normal')).toBe(true);
+    expect(bracketedPasteState(true, '\x1b[?2004l')).toBe(false);
+    expect(bracketedPasteState(false, '\x1b[?2004l…\x1b[?2004h')).toBe(true);
+    expect(bracketedPasteState(true, '\x1b[?2004h…\x1b[?2004l')).toBe(false);
+  });
 });

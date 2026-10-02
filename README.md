@@ -623,6 +623,7 @@ Fuente: `setupMenu` en `src/main/index.js` y
 | `⌘/Ctrl + P` | Ir a archivo (Quick Open) |
 | `⌘/Ctrl + Shift + P` | Command Palette |
 | `⌘/Ctrl + K` | Agregar al espacio |
+| `⌘/Ctrl + Shift + L` | Abrir/cerrar el loop de agentes |
 | `⌘/Ctrl + 1…9` | Ir al espacio 1…9 |
 | `⌘/Ctrl + T` | Nueva terminal |
 | `⌘/Ctrl + B` | Nueva calculadora |

@@ -120,6 +120,7 @@ function setupMenu(win) {
         { label: 'Nueva terminal', accelerator: 'CmdOrCtrl+T', click: send('menu:new-terminal') },
         { label: 'Nueva calculadora', accelerator: 'CmdOrCtrl+B', click: send('menu:new-calc') },
         { label: 'Configuración', accelerator: 'CmdOrCtrl+,', click: send('menu:settings') },
+        { label: 'Loop de agentes', accelerator: 'CmdOrCtrl+Shift+L', click: send('menu:toggle-loop') },
         { type: 'separator' },
         { label: 'Atajos de teclado', accelerator: 'CmdOrCtrl+/', click: send('menu:shortcuts') },
       ],

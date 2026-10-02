@@ -71,6 +71,38 @@ const SUBMIT_DELAY_MS = 250;
  */
 const IDLE_TIMEOUT_MS = 5_000;
 
+/**
+ * Bracketed paste: el programa que corre en el pty avisa con `ESC[?2004h`
+ * que quiere recibir los pegados envueltos en `ESC[200~ … ESC[201~` (y lo
+ * apaga con `ESC[?2004l`). Claude Code y opencode lo activan.
+ *
+ * Es la diferencia entre que el TUI *sepa* dónde termina el pegado y que lo
+ * *adivine* por el ritmo de llegada. Sin los marcadores, Claude Code tomó
+ * el `\r` de un aviso de 310 caracteres como un salto de línea más del
+ * pegado —aun con la pausa de SUBMIT_DELAY_MS— y el mensaje quedó escrito
+ * sin enviar (diag: B1 = B2, con el `\r` incluido). Con los marcadores, el
+ * Enter que llega después es una tecla de verdad.
+ */
+const BRACKETED_ON = '\x1b[?2004h';
+const BRACKETED_OFF = '\x1b[?2004l';
+export const PASTE_START = '\x1b[200~';
+export const PASTE_END = '\x1b[201~';
+
+/**
+ * Estado del modo bracketed paste después de un trozo de salida del pty:
+ * gana la última de las dos secuencias que aparezca; si no aparece
+ * ninguna, se mantiene el anterior.
+ * ponytail: una secuencia partida entre dos trozos se pierde; el programa
+ * la reenvía cada vez que vuelve a su prompt, así que se corrige solo.
+ */
+export function bracketedPasteState(prev, chunk) {
+  const s = String(chunk);
+  const on = s.lastIndexOf(BRACKETED_ON);
+  const off = s.lastIndexOf(BRACKETED_OFF);
+  if (on === -1 && off === -1) return prev;
+  return on > off;
+}
+
 /** Shells que, si están en primer plano, significan "acá no hay agente". */
 const SHELL_NAMES = new Set([
   'sh', 'bash', 'zsh', 'fish', 'dash', 'ksh', 'tcsh', 'csh',
@@ -109,6 +141,8 @@ export function createDispatcher({
   writeToPty,
   whenIdleForPty = () => Promise.resolve(),
   probePty = null,
+  // ¿El programa del pty pidió bracketed paste? (ver bracketedPasteState)
+  isBracketedPaste = () => false,
   onDelivered = () => {},
   onChange = () => {},
   onPresence = () => {},
@@ -274,13 +308,14 @@ export function createDispatcher({
       // La ventana se cierra en el finally para garantizarlo aunque algo
       // tire: sin esto la sesión quedaría armada y el tipeo posterior del
       // usuario se acumularía hasta la próxima entrega (fuga de privacidad).
-      diag.arm(ptyId, { agent: agent.name, cwd: targetCwd, messageId: message.id, payload });
+      const wire = isBracketedPaste(ptyId) ? `${PASTE_START}${payload}${PASTE_END}` : payload;
+      diag.arm(ptyId, { agent: agent.name, cwd: targetCwd, messageId: message.id, payload: wire });
       let drenajeVencido = false;
       try {
         // Dos escrituras separadas, no una: ver SUBMIT_DELAY_MS. El texto
         // primero, y el Enter después de que el TUI del agente haya cerrado
         // su ventana de detección de pegado.
-        writeToPty(ptyId, payload);
+        writeToPty(ptyId, wire);
         // Espera el drenaje real, con tope de tiempo: si la cola nunca
         // resuelve (pty muerto sin cerrar la cola), el reparto no se cuelga.
         drenajeVencido = await Promise.race([

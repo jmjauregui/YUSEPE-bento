@@ -41,7 +41,7 @@ export function buildWallpaperSection() {
 
   renderCurrent();
 
-  return h('div', {}, [currentEl, uploadBtn, uploadError, searchInput, resultsEl]);
+  return h('div', {}, [currentEl, uploadError, searchInput, resultsEl]);
 
   async function doUploadLocal() {
     uploadError.classList.add('hidden');
@@ -126,24 +126,22 @@ export function buildWallpaperSection() {
     currentEl.innerHTML = '';
     const wp = profile.wallpaper;
     if (!wp) {
-      currentEl.append(h('p', { class: 'text-xs text-fg-subtle mb-2' },
-        'Este workspace no tiene fondo de pantalla configurado.'));
+      currentEl.append(h('div', { class: 'flex items-center justify-between gap-3' }, [
+        h('p', { class: 'text-xs text-fg-subtle' }, 'Sin fondo. Subí una imagen o buscá una abajo.'),
+        uploadBtn,
+      ]));
       return;
     }
 
-    const preview = h('div', {
-      class: 'w-full h-28 rounded-md bg-cover bg-center border border-line mb-2',
-      style: `background-image: url(${wp.url})`,
-    });
-    currentEl.append(preview);
-
-    if (wp.photographerName) {
-      currentEl.append(h('a', {
+    // Vista previa chica con las acciones al lado: a lo ancho, la foto se
+    // comía media pantalla del modal sin aportar más que una miniatura.
+    const credit = wp.photographerName
+      ? h('a', {
         href: wp.photographerUrl,
         class: 'text-[10px] text-fg-subtle hover:underline',
         onClick: (e) => { e.preventDefault(); window.yusepe.shell.openExternal(wp.photographerUrl); },
-      }, `Foto de ${wp.photographerName} en Pexels`));
-    }
+      }, `Foto de ${wp.photographerName} en Pexels`)
+      : null;
 
     // --- Ajustes de imagen. Todos se guardan con merge sobre el objeto
     // wallpaper y se aplican en vivo: setWallpaper emite
@@ -165,18 +163,18 @@ export function buildWallpaperSection() {
         label.textContent = labelFor(Number(slider.value));
         persist();
       });
-      return h('div', { class: 'mt-1' }, [label, slider]);
+      return h('div', {}, [label, slider]);
     }
 
     const FITS = [['cover', 'Rellenar'], ['contain', 'Ajustar'], ['fill', 'Estirar']];
     const currentFit = FITS.some(([v]) => v === wp.fit) ? wp.fit : 'cover';
-    const fitRow = h('div', { class: 'flex items-center gap-1.5 mt-2' }, [
-      h('span', { class: 'text-xs text-fg-subtle mr-1' }, 'Modo:'),
-      ...FITS.map(([val, lbl]) => h('button', {
-        class: 'text-xs px-2 py-1 rounded-md border transition '
-          + (val === currentFit ? 'border-accent text-accent' : 'border-line hover:bg-bg-elev'),
-        onClick: async () => { await savePatch({ fit: val }); renderCurrent(); },
-      }, lbl)),
+    const fitSelect = h('select', {
+      class: 'bg-bg-elev border border-line rounded-md text-xs text-fg px-2 py-1 focus:outline-none focus:ring-1 focus:ring-accent',
+    }, FITS.map(([val, lbl]) => h('option', { value: val }, lbl)));
+    fitSelect.value = currentFit;
+    fitSelect.addEventListener('change', () => savePatch({ fit: fitSelect.value }));
+    const fitRow = h('div', { class: 'flex items-center gap-2' }, [
+      h('span', { class: 'text-xs text-fg-subtle' }, 'Modo'), fitSelect,
     ]);
 
     const POSITIONS = [
@@ -185,18 +183,18 @@ export function buildWallpaperSection() {
       'bottom left', 'bottom', 'bottom right',
     ];
     const currentPos = POSITIONS.includes(wp.position) ? wp.position : 'center';
-    const posGrid = h('div', { class: 'grid grid-cols-3 gap-1 w-16' }, POSITIONS.map((p) => h('button', {
+    const posGrid = h('div', { class: 'grid grid-cols-3 gap-0.5 w-12' }, POSITIONS.map((p) => h('button', {
       title: `Encuadre: ${p}`,
-      class: 'h-4 rounded-sm border transition '
+      class: 'h-3 rounded-sm border transition '
         + (p === currentPos ? 'bg-accent border-accent' : 'border-line hover:bg-bg-elev'),
       onClick: async () => { await savePatch({ position: p }); renderCurrent(); },
     })));
-    const posRow = h('div', { class: 'flex items-center gap-2 mt-2' }, [
-      h('span', { class: 'text-xs text-fg-subtle' }, 'Encuadre:'), posGrid,
+    const posRow = h('div', { class: 'flex items-center gap-2' }, [
+      h('span', { class: 'text-xs text-fg-subtle' }, 'Encuadre'), posGrid,
     ]);
 
     const removeBtn = h('button', {
-      class: 'text-xs px-2.5 py-1 rounded-md border border-line hover:bg-bg-elev transition mt-2',
+      class: 'text-xs px-2.5 py-1.5 rounded-md border border-line hover:bg-bg-elev transition',
       onClick: async () => {
         const saved = await ProfileManager.setWallpaper(profile.id, null);
         profile.wallpaper = saved.wallpaper;
@@ -205,17 +203,27 @@ export function buildWallpaperSection() {
     }, 'Quitar fondo');
 
     currentEl.append(
-      sliderRow((v) => `Transparencia de terminales: ${Math.round(v * 100)}%`,
-        { min: 0.15, max: 1, step: 0.05, value: wp.opacity ?? 0.55, key: 'opacity' }),
-      sliderRow((v) => `Zoom del fondo: ${Math.round(v * 100)}%`,
-        { min: 0.5, max: 2, step: 0.05, value: Number(wp.zoom) || 1, key: 'zoom' }),
-      sliderRow((v) => `Difuminado: ${v}px`,
-        { min: 0, max: 20, step: 1, value: Number(wp.blur) || 0, key: 'blur' }),
-      sliderRow((v) => `Oscurecer: ${Math.round(v * 100)}%`,
-        { min: 0, max: 0.7, step: 0.05, value: Number(wp.dim) || 0, key: 'dim' }),
-      fitRow,
-      posRow,
-      removeBtn,
+      h('div', { class: 'flex gap-3' }, [
+        h('div', {
+          class: 'w-36 h-20 shrink-0 rounded-md bg-cover bg-center border border-line',
+          style: `background-image: url(${wp.url})`,
+        }),
+        h('div', { class: 'flex flex-col justify-between min-w-0' }, [
+          h('div', { class: 'flex flex-wrap gap-1.5' }, [uploadBtn, removeBtn]),
+          h('div', { class: 'flex items-center gap-4' }, [fitRow, posRow]),
+          ...(credit ? [credit] : []),
+        ]),
+      ]),
+      h('div', { class: 'grid grid-cols-2 gap-x-4 gap-y-2 mt-3' }, [
+        sliderRow((v) => `Transparencia de terminales: ${Math.round(v * 100)}%`,
+          { min: 0.15, max: 1, step: 0.05, value: wp.opacity ?? 0.55, key: 'opacity' }),
+        sliderRow((v) => `Zoom: ${Math.round(v * 100)}%`,
+          { min: 0.5, max: 2, step: 0.05, value: Number(wp.zoom) || 1, key: 'zoom' }),
+        sliderRow((v) => `Difuminado: ${v}px`,
+          { min: 0, max: 20, step: 1, value: Number(wp.blur) || 0, key: 'blur' }),
+        sliderRow((v) => `Oscurecer: ${Math.round(v * 100)}%`,
+          { min: 0, max: 0.7, step: 0.05, value: Number(wp.dim) || 0, key: 'dim' }),
+      ]),
     );
   }
 }

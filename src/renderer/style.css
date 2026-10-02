@@ -386,9 +386,6 @@
 
   /* ---- No leídos del loop (spec 034) ---- */
   .loop-badge {
-    position: absolute;
-    top: -2px;
-    right: -3px;
     min-width: 15px;
     height: 15px;
     padding: 0 4px;
@@ -404,6 +401,40 @@
   }
   /* Acento: alguno de los no leídos es para vos. */
   .loop-badge.is-user { background: var(--color-accent); color: #fff; }
+
+  /* Pastilla del loop: un brillo que la recorre cada tanto, para que se
+     distinga del resto de la barra sin distraer en una jornada de 12 h —
+     barre en 1,2 s y descansa el resto del ciclo. El ícono gira al pasar
+     el mouse. Sin movimiento si el sistema pide reducir animaciones. */
+  .loop-pill { position: relative; overflow: hidden; }
+  .loop-pill > * { position: relative; z-index: 1; }
+  .loop-pill::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(105deg, transparent 35%, rgb(var(--color-accent-rgb) / 0.28) 50%, transparent 65%);
+    transform: translateX(-100%);
+    animation: loop-pill-sheen 6s ease-in-out infinite;
+    pointer-events: none;
+  }
+  .loop-pill:disabled::before { animation: none; }
+  .loop-pill svg { transition: transform 0.5s ease; }
+  .loop-pill:not(:disabled):hover svg { transform: rotate(180deg); }
+  @keyframes loop-pill-sheen {
+    0% { transform: translateX(-100%); }
+    20%, 100% { transform: translateX(100%); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .loop-pill::before { animation: none; }
+    .loop-pill svg { transition: none; }
+  }
+
+  /* Pastilla del loop con el panel abierto. */
+  .loop-pill.is-active {
+    color: var(--color-accent);
+    border-color: rgb(var(--color-accent-rgb) / 0.45);
+    background: rgb(var(--color-accent-rgb) / 0.12);
+  }
 
   .loop-row.is-unread > .loop-bubble {
     box-shadow: 0 0 0 1px rgb(var(--color-accent-rgb) / 0.35);
@@ -423,6 +454,206 @@
     font-size: 10px;
     font-weight: 600;
     color: var(--color-accent);
+  }
+
+  /* ---- Loop expandido (spec 037) ----
+     El mismo panel en modo de ancho completo: los nodos de siempre
+     (roster, hilo, compositor) se reubican en un grid de 3 columnas.
+     Las columnas laterales sólo existen en este modo. */
+  #loop-sidebar .loop-left,
+  #loop-sidebar .loop-right { display: none; }
+
+  #loop-sidebar.is-expanded {
+    display: grid;
+    left: 0;
+    width: auto !important; /* pisa el ancho guardado del panel lateral */
+    border-left: none;
+    grid-template-columns: var(--loop-left-w, 280px) minmax(0, 1fr) var(--loop-right-w, 380px);
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "header header   header"
+      "roster stream   right"
+      "left   stream   right"
+      "left   composer right";
+  }
+  #loop-sidebar.is-expanded .loop-header   { grid-area: header; }
+  #loop-sidebar.is-expanded .loop-roster   { grid-area: roster; border-right: 1px solid var(--color-line); }
+  #loop-sidebar.is-expanded .loop-stream,
+  #loop-sidebar.is-expanded .loop-empty    { grid-area: stream; }
+  #loop-sidebar.is-expanded .loop-composer { grid-area: composer; }
+  #loop-sidebar.is-expanded .loop-left {
+    grid-area: left;
+    display: flex;
+    border-right: 1px solid var(--color-line);
+  }
+  #loop-sidebar.is-expanded .loop-right {
+    grid-area: right;
+    display: flex;
+    border-left: 1px solid var(--color-line);
+  }
+  #loop-sidebar.is-expanded .sidebar-resize-handle { display: none; }
+
+  /* Divisores arrastrables de la vista expandida: invisibles hasta el
+     hover, con la misma línea de acento que el resize de los paneles. */
+  #loop-sidebar .loop-splitter { display: none; }
+  #loop-sidebar.is-expanded .loop-splitter {
+    display: block;
+    z-index: 5;
+    background: transparent;
+    transition: background 0.12s;
+  }
+  #loop-sidebar.is-expanded .loop-splitter[data-axis='col'] {
+    grid-row: 2 / 5;
+    width: 7px;
+    cursor: col-resize;
+  }
+  #loop-sidebar.is-expanded .loop-splitter-left  { grid-column: 1; justify-self: end; margin-right: -4px; }
+  #loop-sidebar.is-expanded .loop-splitter-right { grid-column: 3; justify-self: start; margin-left: -4px; }
+  #loop-sidebar.is-expanded .loop-splitter-row {
+    height: 7px;
+    margin: -3px 0;
+    flex-shrink: 0;
+    cursor: row-resize;
+    border-top: 1px solid var(--color-line);
+    background-clip: padding-box;
+  }
+  #loop-sidebar.is-expanded .loop-splitter:hover,
+  body.resizing-loop #loop-sidebar .loop-splitter[data-axis='col']:hover,
+  body.resizing-loop-row #loop-sidebar .loop-splitter-row {
+    background: rgb(var(--color-accent-rgb) / 0.45);
+  }
+  body.resizing-loop { cursor: col-resize; user-select: none; }
+  body.resizing-loop-row { cursor: row-resize; user-select: none; }
+  /* Que xterm no se quede con el mouse a mitad del arrastre. */
+  body.resizing-loop #loop-sidebar .loop-slot,
+  body.resizing-loop-row #loop-sidebar .loop-slot { pointer-events: none; }
+  #loop-sidebar .loop-slot-tasks { flex: 0 0 var(--loop-tasks-h, 50%); }
+
+  /* Las columnas laterales entran después del barrido del panel, deslizándose
+     desde su borde; el contenido central sólo se funde. Al contraer, salen
+     primero (is-collapsing) para que el barrido no arrastre texto a medias. */
+  #loop-sidebar.is-expanded .loop-left,
+  #loop-sidebar.is-expanded .loop-roster  { animation: loop-in-left 0.19s 0.04s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+  #loop-sidebar.is-expanded .loop-right   { animation: loop-in-right 0.19s 0.04s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+  #loop-sidebar.is-expanded .loop-stream,
+  #loop-sidebar.is-expanded .loop-composer { animation: loop-fade 0.15s ease both; }
+  #loop-sidebar.is-collapsing .loop-left,
+  #loop-sidebar.is-collapsing .loop-right,
+  #loop-sidebar.is-collapsing .loop-roster { animation: loop-out 0.06s ease both; }
+  @keyframes loop-in-left  { from { opacity: 0; transform: translateX(-16px); } to { opacity: 1; transform: none; } }
+  @keyframes loop-in-right { from { opacity: 0; transform: translateX(16px); }  to { opacity: 1; transform: none; } }
+  @keyframes loop-fade     { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes loop-out      { from { opacity: 1; } to { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) {
+    #loop-sidebar.is-expanded .loop-left,
+    #loop-sidebar.is-expanded .loop-roster,
+    #loop-sidebar.is-expanded .loop-right,
+    #loop-sidebar.is-expanded .loop-stream,
+    #loop-sidebar.is-expanded .loop-composer { animation: none; }
+  }
+
+  /* Hilo y compositor con ancho de lectura, centrados. */
+  #loop-sidebar.is-expanded .loop-stream,
+  #loop-sidebar.is-expanded .loop-composer {
+    padding-inline: max(1rem, calc((100% - 880px) / 2));
+  }
+  #loop-sidebar.is-expanded .loop-composer textarea { min-height: 3.5rem; }
+
+  #loop-sidebar.is-expanded .loop-roster::before {
+    content: 'Agentes en el loop';
+    display: block;
+    padding: 0.25rem 0.5rem 0.4rem;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--color-fg-subtle);
+  }
+  .loop-col-title {
+    padding: 0.25rem 0.5rem 0.4rem;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--color-fg-subtle);
+  }
+  /* Tareas y terminal llenan su mitad de la columna derecha. */
+  #loop-sidebar .loop-slot > * { position: absolute; inset: 0; border-radius: 0; border: none; }
+
+  /* ---- Caja de mensaje del loop (estilo input de Claude) ---- */
+  .loop-input {
+    background: var(--color-bg-elev);
+    border: 1px solid var(--color-line);
+    border-radius: 16px;
+    padding: 0.6rem 0.6rem 0.5rem 0.75rem;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.12), 0 6px 20px rgb(0 0 0 / 0.10);
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .loop-input:focus-within {
+    border-color: rgb(var(--color-accent-rgb) / 0.45);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.12), 0 6px 24px rgb(0 0 0 / 0.16);
+  }
+  .loop-send {
+    width: 30px;
+    height: 30px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--color-line);
+    color: var(--color-fg-subtle);
+    transition: background 0.15s, color 0.15s, transform 0.1s;
+  }
+  /* Con texto: botón "encendido", alto contraste y neutro (sin el azul de
+     marca), como el de Claude. */
+  .loop-send.is-ready { background: var(--color-fg); color: var(--color-bg); }
+  .loop-send.is-ready:hover { transform: scale(1.06); }
+  .loop-send:active { transform: scale(0.95); }
+
+  /* ---- Avatar del agente en el hilo (sólo en el loop expandido) ---- */
+  .loop-avatar { display: none; }
+  #loop-sidebar.is-expanded .loop-avatar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 34px;
+    height: 34px;
+    margin: 2px 10px 0 0;
+    border-radius: 999px;
+    border: 1.5px solid var(--color-line);
+    background: var(--color-bg-elev);
+    font-size: 17px;
+    line-height: 1;
+    font-weight: 600;
+    color: var(--color-fg-soft);
+    user-select: none;
+  }
+
+  /* ---- "@claudio está contando cabellos…" ---- */
+  .loop-thinking { margin-bottom: 0.4rem; }
+  .loop-thinking-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.3rem;
+    font-size: 11px;
+    color: var(--color-fg-muted);
+    padding: 0.1rem 0.25rem;
+    animation: loop-fade 0.2s ease both;
+  }
+  .loop-thinking-icon { font-size: 12px; color: var(--color-accent); animation: loop-breathe 1.6s ease-in-out infinite; }
+  .loop-dots { display: inline-flex; gap: 2px; margin-left: 1px; }
+  .loop-dots i {
+    width: 3px;
+    height: 3px;
+    border-radius: 999px;
+    background: currentColor;
+    animation: loop-dot 1.2s ease-in-out infinite;
+  }
+  .loop-dots i:nth-child(2) { animation-delay: 0.15s; }
+  .loop-dots i:nth-child(3) { animation-delay: 0.3s; }
+  @keyframes loop-dot { 0%, 60%, 100% { opacity: 0.25; transform: none; } 30% { opacity: 1; transform: translateY(-2px); } }
+  @keyframes loop-breathe { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) {
+    .loop-dots i, .loop-thinking-icon, .loop-thinking-row { animation: none; }
   }
 
   /* ---- Toasts (notificaciones no-bloqueantes) ---- */

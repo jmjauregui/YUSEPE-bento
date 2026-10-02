@@ -117,6 +117,29 @@ describe('registro de agentes', () => {
     expect((await listAgents(cwd))[0].color).toBeNull();
   });
 
+  // El emoji es el avatar del agente en la vista expandida. Mismo criterio
+  // que el color: status.json se edita a mano, se valida al escribir y al leer.
+  it('guarda el emoji sólo si es un emoji, lo conserva al reeditar y se borra con ""', async () => {
+    expect((await registerAgent(cwd, { name: 'claudio', emoji: '🤖' })).emoji).toBe('🤖');
+    expect((await registerAgent(cwd, { name: 'claudio', role: 'otro rol' })).emoji).toBe('🤖');
+    expect((await registerAgent(cwd, { name: 'dev', emoji: '👩🏽‍💻' })).emoji).toBe('👩🏽‍💻');
+
+    for (const junk of ['a', 'claudio', '<img>', '🤖 hola', '"🤖"', '12', ' ', 'x'.repeat(20)]) {
+      expect((await registerAgent(cwd, { name: 'malo', emoji: junk })).emoji).toBeNull();
+    }
+
+    expect((await registerAgent(cwd, { name: 'claudio', emoji: '' })).emoji).toBeNull();
+  });
+
+  it('un emoji escrito a mano en status.json se descarta al leer si no es válido', async () => {
+    await registerAgent(cwd, { name: 'claudio' });
+    const raw = JSON.parse(await fs.readFile(path.join(cwd, STATUS_FILE), 'utf8'));
+    raw.agents.claudio.emoji = '<script>';
+    await fs.writeFile(path.join(cwd, STATUS_FILE), JSON.stringify(raw), 'utf8');
+
+    expect((await listAgents(cwd))[0].emoji).toBeNull();
+  });
+
   it('un status.json corrupto no deja al loop sin agentes', async () => {
     await setupAgents();
     await fs.writeFile(path.join(cwd, STATUS_FILE), '{ roto', 'utf8');
@@ -641,6 +664,48 @@ describe('formatForTerminal', () => {
     it('las comillas dobles y el $ pelado no rompen nada', () => {
       wrapped('el label dice "Guardar" y cuesta $5');
     });
+  });
+});
+
+describe('crossedMessages: falsos cruces (campo, mensaje #307)', () => {
+  it('el mensaje del usuario guarda hasta dónde leyó (lo manda el panel)', async () => {
+    await setupAgents();
+    const r = await postMessage(cwd, { from: 'claudio', to: 'usuario', text: 'reporte' });
+    const mine = await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'ok', seenUpTo: r.id });
+    expect(mine.seenUpTo).toBe(r.id);
+    // Basura no entra.
+    expect((await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'x', seenUpTo: '<img>' })).seenUpTo).toBeNull();
+  });
+
+  it('con seenUpTo, el usuario sí reporta cruces reales', async () => {
+    await setupAgents();
+    const r1 = await postMessage(cwd, { from: 'claudio', to: 'usuario', text: 'visto' });
+    await postMessage(cwd, { from: 'claudio', to: 'usuario', text: 'llegó mientras escribía' });
+    await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'respuesta', seenUpTo: r1.id });
+    const all = await listMessages(cwd);
+    expect(crossedMessages(all, all[2]).map((m) => m.seq)).toEqual([2]);
+  });
+
+  it('un mensaje del usuario sin seenUpTo (viejo) no reporta cruces', async () => {
+    await setupAgents();
+    await postMessage(cwd, { from: 'claudio', to: 'usuario', text: 'reporte 1' });
+    await postMessage(cwd, { from: 'claudio', to: 'usuario', text: 'reporte 2' });
+    await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'gracias' });
+    const all = await listMessages(cwd);
+
+    expect(crossedMessages(all, all[2])).toEqual([]);
+    expect(formatForTerminal(all[2], { crossed: crossedMessages(all, all[2]) })).not.toContain('sin haber visto');
+  });
+
+  it('sólo cuentan los mensajes del destinatario, no los de un tercero', async () => {
+    await setupAgents();
+    await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'del usuario' });
+    await postMessage(cwd, { from: 'opencito', to: 'claudio', text: 'de opencito' });
+    await postMessage(cwd, { from: 'claudio', to: 'opencito', text: 'respuesta' });
+    const all = await listMessages(cwd);
+
+    // claudio no leyó nada, pero a opencito sólo le importa lo que ÉL le mandó.
+    expect(crossedMessages(all, all[2]).map((m) => m.seq)).toEqual([2]);
   });
 });
 

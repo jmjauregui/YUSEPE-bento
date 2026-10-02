@@ -27,6 +27,7 @@ const GROUPS = [
       [[MOD, 'P'], 'Ir a archivo (fuzzy-find)'],
       [[MOD, SHIFT, 'P'], 'Command Palette'],
       [[MOD, 'K'], 'Agregar al espacio'],
+      [[MOD, SHIFT, 'L'], 'Loop de agentes'],
       [[MOD, '1–9'], 'Ir al espacio N'],
     ],
   },

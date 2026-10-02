@@ -122,14 +122,16 @@ contextBridge.exposeInMainWorld('yusepe', {
   // sale sólo lo que necesita la UI del panel de mensajes.
   loop: {
     agents: (cwd) => ipcRenderer.invoke('loop:agents', { cwd }),
-    register: (cwd, { name, role, tileId, color }) =>
-      ipcRenderer.invoke('loop:register', { cwd, name, role, tileId, color }),
+    // El objeto pasa entero: main toma sólo los campos que conoce y los
+    // valida (loopOps.registerAgent). Enumerarlos acá hacía que un campo
+    // nuevo se perdiera en silencio con un preload viejo cargado.
+    register: (cwd, agent = {}) => ipcRenderer.invoke('loop:register', { ...agent, cwd }),
     unregister: (cwd, name) => ipcRenderer.invoke('loop:unregister', { cwd, name }),
     setState: (cwd, name, state) => ipcRenderer.invoke('loop:set-state', { cwd, name, state }),
 
     messages: (cwd, opts = {}) => ipcRenderer.invoke('loop:messages', { cwd, ...opts }),
-    post: (cwd, { from, to, text, replyTo }) =>
-      ipcRenderer.invoke('loop:post', { cwd, from, to, text, replyTo }),
+    // Objeto entero, como register: main toma y valida sólo lo que conoce.
+    post: (cwd, msg = {}) => ipcRenderer.invoke('loop:post', { ...msg, cwd }),
     inbox: (cwd, name) => ipcRenderer.invoke('loop:inbox', { cwd, name }),
 
     skill: (cwd) => ipcRenderer.invoke('loop:skill', { cwd }),
@@ -221,5 +223,6 @@ contextBridge.exposeInMainWorld('yusepe', {
     onNewTerminal:     (handler) => on('menu:new-terminal', handler),
     onNewCalc:         (handler) => on('menu:new-calc', handler),
     onSettings:        (handler) => on('menu:settings', handler),
+    onToggleLoop:      (handler) => on('menu:toggle-loop', handler),
   },
 });

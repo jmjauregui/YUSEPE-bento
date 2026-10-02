@@ -31,6 +31,8 @@ import { ProfileManager } from '../core/profileManager.js';
 import * as liveTiles from '../core/liveTiles.js';
 import { focusTileById } from './bentoGrid.js';
 import { pickTerminal } from './terminalPicker.js';
+import { labelFor } from './workspaceManager.js';
+import { thinkingPhrase, workingFor } from '../core/loopThinking.js';
 import { renderMarkdown } from '../core/markdown.js';
 import {
   badgeLabel, cursorAtEnd, ensureCursor, saveCursor, unreadSummary,
@@ -112,6 +114,30 @@ function colorOf(agent) {
 const expanded = new Set();
 
 let panelEl = null;
+/**
+ * Vista expandida (spec 037): el MISMO panel en modo de ancho completo,
+ * con 3 columnas. No es otro componente a propósito: roster, hilo y
+ * compositor son los mismos nodos reacomodados por CSS, así el render
+ * incremental del hilo (023), el borrador (022) y los no leídos (034)
+ * siguen siendo un único estado.
+ */
+let isExpanded = false;
+let expandBtn = null;
+let tilesListEl = null;
+let tasksSlotEl = null;
+let termSlotEl = null;
+/** Lo montado en la columna derecha: `{ profileId, tasks, termRoot }`. */
+let rightMounted = null;
+
+/** Emoji de avatar por agente, para el hilo (sólo se ve expandido). */
+let agentEmojis = {};
+
+/** "@claudio está contando cabellos…": agentes en `working` (ver loopThinking). */
+let thinkingEl = null;
+let thinkingTimer = null;
+let thinkingTick = 0;
+let thinkingAgents = [];
+
 let rosterEl = null;
 let streamEl = null;
 let composerEl = null;
@@ -146,6 +172,18 @@ export function getLoopMode() {
 
 export function setLoopMode(mode) {
   localStorage.setItem(LOOP_MODE_KEY, mode === 'multi' ? 'multi' : 'single');
+}
+
+/* ---------- Cómo se abre: panel lateral o expandido ---------- */
+
+const LOOP_OPEN_VIEW_KEY = 'yusepe:loop-open-view';
+
+/** 'side' (panel lateral, default) o 'expanded' (vista de ancho completo). */
+export function getLoopOpenView() {
+  try { return localStorage.getItem(LOOP_OPEN_VIEW_KEY) === 'expanded' ? 'expanded' : 'side'; } catch { return 'side'; }
+}
+export function setLoopOpenView(view) {
+  try { localStorage.setItem(LOOP_OPEN_VIEW_KEY, view === 'expanded' ? 'expanded' : 'side'); } catch { /* noop */ }
 }
 
 /* ---------- Estado abierto/cerrado por workspace ---------- */
@@ -206,10 +244,16 @@ export function initLoopSidebar() {
     applyUnread(null);
     if (cwd()) { window.yusepe.loop.start(cwd()); updateUnread(); }
     // Restaurar el estado abierto/cerrado guardado para este workspace.
-    if (savedOpenState(state.profile?.id)) openSidebar();
+    if (savedOpenState(state.profile?.id)) openSidebar({ animate: false });
     else closeSidebar();
+    // Expandido, la vista pasa a ser la del workspace nuevo.
+    if (isExpanded && isOpen) { mountRight(); renderTilesList(); }
   });
+  bus.on('tile:*', () => { if (isExpanded) renderTilesList(); });
   bus.on('workspace:left', () => {
+    // Las piezas de la columna derecha son de este workspace: se sueltan
+    // (la terminal sigue viva, ver unmountRight).
+    unmountRight();
     // Guardar el estado actual antes de salir, para restaurarlo al volver.
     persistOpenState(state.profile?.id, isOpen);
     // En modo "un loop a la vez", detener el dispatcher de este workspace.
@@ -330,23 +374,281 @@ export function toggleLoopSidebar() {
   else openSidebar();
 }
 
-function openSidebar() {
+function openSidebar({ animate = true } = {}) {
   if (!panelEl) return;
   if (!cwd()) {
     toast.error('Este workspace no tiene carpeta asignada — el loop guarda sus mensajes en .ybento/loop/');
     return;
   }
   isOpen = true;
+  document.getElementById('btn-toggle-loop')?.classList.add('is-active');
   persistOpenState(state.profile?.id, true);
   panelEl.classList.remove('hidden');
+  // Preferencia de Configuración: abrir directo en la vista expandida.
+  // Al restaurar un workspace no se anima (no fue un gesto del usuario).
+  if (getLoopOpenView() === 'expanded' && !isExpanded) setExpanded(true, { animate });
   refresh();
 }
 
 function closeSidebar() {
   if (!panelEl) return;
+  if (isExpanded) setExpanded(false, { animate: false });
+  renderThinking([], {});
   isOpen = false;
+  document.getElementById('btn-toggle-loop')?.classList.remove('is-active');
   persistOpenState(state.profile?.id, false);
   panelEl.classList.add('hidden');
+}
+
+/* ---------- "Está pensando…" ---------- */
+
+/**
+ * Una línea por agente en `working` (y con su agente vivo en la terminal),
+ * arriba del compositor. Es la retroalimentación que faltaba: mandás un
+ * mensaje, el agente lo lee con `ybento leer` (032) y pasa a working — y
+ * desde ese momento se ve que alguien lo está atendiendo.
+ *
+ * Va en el compositor y no en el hilo: el render incremental del hilo
+ * (023) cuenta un nodo por mensaje.
+ */
+function renderThinking(agents, presence) {
+  if (!thinkingEl) return;
+  thinkingAgents = agents.filter((a) => a.state === 'working' && presence[a.name]?.present !== false);
+  if (!thinkingAgents.length) {
+    thinkingEl.classList.add('hidden');
+    thinkingEl.replaceChildren();
+    clearInterval(thinkingTimer);
+    thinkingTimer = null;
+    return;
+  }
+  thinkingEl.classList.remove('hidden');
+  paintThinking();
+  // Las frases rotan cada pocos segundos, como el indicador de Claude Code.
+  thinkingTimer ??= setInterval(() => { thinkingTick += 1; paintThinking(); }, 2800);
+}
+
+function paintThinking() {
+  thinkingEl.replaceChildren(...thinkingAgents.map((agent) => {
+    const tint = colorOf(agent);
+    const elapsed = workingFor(agent.updatedAt);
+    return h('div', { class: 'loop-thinking-row' }, [
+      h('span', { class: 'loop-thinking-icon' }, agent.emoji || '●'),
+      h('span', {
+        class: 'font-medium',
+        style: `color: color-mix(in srgb, ${tint} 75%, var(--color-fg))`,
+      }, `@${agent.name}`),
+      h('span', {}, ` está ${thinkingPhrase(agent.name, thinkingTick)}`),
+      h('span', { class: 'loop-dots', 'aria-hidden': 'true' }, [h('i'), h('i'), h('i')]),
+      ...(elapsed ? [h('span', { class: 'text-fg-subtle/70 ml-1' }, `· ${elapsed}`)] : []),
+    ]);
+  }));
+}
+
+/* ---------- Vista expandida (spec 037) ---------- */
+
+/**
+ * Tamaños de las columnas de la vista expandida, arrastrables y guardados
+ * por usuario. Viven como variables CSS en el panel (el grid las lee), así
+ * arrastrar no re-renderiza nada: la terminal se re-ajusta sola con su
+ * ResizeObserver.
+ */
+const SPLITS = {
+  left:  { key: 'yusepe:loop-x-left',  css: '--loop-left-w',  unit: 'px', def: 280, min: 200, max: 560 },
+  right: { key: 'yusepe:loop-x-right', css: '--loop-right-w', unit: 'px', def: 380, min: 260, max: 900 },
+  tasks: { key: 'yusepe:loop-x-tasks', css: '--loop-tasks-h', unit: '%',  def: 50,  min: 12,  max: 88 },
+};
+/** El chat del centro nunca queda más angosto que esto. */
+const MIN_CENTER_PX = 380;
+
+function readSplit(name) {
+  const cfg = SPLITS[name];
+  let v = NaN;
+  try { v = parseFloat(localStorage.getItem(cfg.key)); } catch { /* sin storage: default */ }
+  return Number.isFinite(v) ? Math.min(cfg.max, Math.max(cfg.min, v)) : cfg.def;
+}
+
+function writeSplit(name, value, persist = false) {
+  const cfg = SPLITS[name];
+  panelEl.style.setProperty(cfg.css, `${value}${cfg.unit}`);
+  if (persist) { try { localStorage.setItem(cfg.key, String(Math.round(value))); } catch { /* noop */ } }
+}
+
+/**
+ * Divisor arrastrable. `compute(e, start)` devuelve el valor nuevo a partir
+ * del evento y de lo medido al empezar; doble clic vuelve al default.
+ */
+function makeSplitter(name, { axis, className, begin, compute }) {
+  const handle = h('div', {
+    class: `loop-splitter ${className}`,
+    dataset: { axis },
+    title: 'Arrastrá para cambiar el tamaño (doble clic restablece)',
+  });
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const start = begin(e);
+    let last = readSplit(name);
+    const cfg = SPLITS[name];
+    const onMove = (ev) => {
+      last = Math.min(cfg.max, Math.max(cfg.min, compute(ev, start)));
+      writeSplit(name, last);
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.classList.remove('resizing-loop', 'resizing-loop-row');
+      writeSplit(name, last, true);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    document.body.classList.add(axis === 'row' ? 'resizing-loop-row' : 'resizing-loop');
+  });
+  handle.addEventListener('dblclick', () => writeSplit(name, SPLITS[name].def, true));
+  return handle;
+}
+
+function buildSplitters(rightEl) {
+  const panelWidth = () => panelEl.getBoundingClientRect().width;
+  const leftHandle = makeSplitter('left', {
+    axis: 'col',
+    className: 'loop-splitter-left',
+    begin: (e) => ({ x: e.clientX, w: readCurrent('left'), other: readCurrent('right') }),
+    compute: (e, st) => Math.min(st.w + (e.clientX - st.x), panelWidth() - st.other - MIN_CENTER_PX),
+  });
+  const rightHandle = makeSplitter('right', {
+    axis: 'col',
+    className: 'loop-splitter-right',
+    // Pegado al borde derecho: crece cuando el mouse va a la izquierda.
+    begin: (e) => ({ x: e.clientX, w: readCurrent('right'), other: readCurrent('left') }),
+    compute: (e, st) => Math.min(st.w - (e.clientX - st.x), panelWidth() - st.other - MIN_CENTER_PX),
+  });
+  const rowHandle = makeSplitter('tasks', {
+    axis: 'row',
+    className: 'loop-splitter-row',
+    begin: () => rightEl.getBoundingClientRect(),
+    compute: (e, rect) => ((e.clientY - rect.top) / rect.height) * 100,
+  });
+  return { leftHandle, rightHandle, rowHandle };
+}
+
+/** Valor vigente de un split (lo que está aplicado en el panel, o el guardado). */
+function readCurrent(name) {
+  const v = parseFloat(panelEl.style.getPropertyValue(SPLITS[name].css));
+  return Number.isFinite(v) ? v : readSplit(name);
+}
+
+let expandAnim = null;
+
+/**
+ * Expandir/contraer con animación: el panel queda anclado a la derecha y
+ * su borde izquierdo "barre" hacia la izquierda (o vuelve), con un
+ * clip-path. Se anima el recorte y no el ancho porque el layout cambia de
+ * flex a grid de 3 columnas — eso no se interpola; el recorte sí, y sin
+ * re-layout en cada frame (las terminales no se re-ajustan 60 veces).
+ */
+function setExpanded(on, { animate = true } = {}) {
+  if (on === isExpanded && !expandAnim) return;
+  expandAnim?.cancel();
+  expandAnim = null;
+  isExpanded = on;
+  expandBtn.lastChild.textContent = on ? 'Contraer' : 'Expandir';
+  expandBtn.title = on ? 'Volver al panel lateral' : 'Ver el loop a pantalla completa, con tareas y una terminal';
+
+  const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  const canAnimate = animate && !reduce && !panelEl.classList.contains('hidden') && panelEl.animate;
+  const sideLeft = () => Math.max(0, window.innerWidth - (parseInt(panelEl.style.width, 10) || WIDTH_OPTS.defaultWidth));
+  const opts = { duration: 160, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' };
+  const followLast = () => queueMicrotask(() => { streamEl.scrollTop = streamEl.scrollHeight; });
+
+  if (on) {
+    const from = sideLeft();
+    panelEl.classList.add('is-expanded');
+    mountRight();
+    renderTilesList();
+    followLast();
+    if (canAnimate) {
+      expandAnim = panelEl.animate(
+        [{ clipPath: `inset(0 0 0 ${from}px)` }, { clipPath: 'inset(0 0 0 0)' }], opts);
+      expandAnim.onfinish = () => { expandAnim = null; };
+    }
+    return;
+  }
+
+  const finish = () => {
+    expandAnim = null;
+    panelEl.classList.remove('is-expanded');
+    unmountRight();
+    followLast();
+  };
+  if (!canAnimate) { finish(); return; }
+  panelEl.classList.add('is-collapsing');
+  expandAnim = panelEl.animate(
+    [{ clipPath: 'inset(0 0 0 0)' }, { clipPath: `inset(0 0 0 ${sideLeft()}px)` }],
+    { ...opts, duration: 130, easing: 'cubic-bezier(0.4, 0, 1, 1)' });
+  expandAnim.onfinish = () => { panelEl.classList.remove('is-collapsing'); finish(); };
+  expandAnim.oncancel = () => panelEl.classList.remove('is-collapsing');
+}
+
+/** Terminales y archivos fijados del workspace; clic → contraer y enfocar. */
+function renderTilesList() {
+  if (!tilesListEl) return;
+  const tiles = (state.profile?.tiles || []).filter((t) => t.kind === 'terminal' || t.kind === 'file');
+  tilesListEl.replaceChildren(...(tiles.length ? tiles.map((tile) => h('button', {
+    class: 'w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left text-xs text-fg-soft hover:bg-bg-elev hover:text-fg transition',
+    onClick: () => { setExpanded(false); focusTileById(tile.id); },
+  }, [
+    h('span', { class: 'text-fg-subtle shrink-0 flex items-center' }, svgIcon(tile.kind === 'file' ? 'file' : 'terminal', { size: 13 })),
+    h('span', { class: 'truncate flex-1' }, labelFor(tile)),
+    ...(tile.loopAgent ? [h('span', { class: 'text-[10px] text-accent-soft shrink-0' }, `@${tile.loopAgent}`)] : []),
+  ])) : [h('p', { class: 'text-[11px] text-fg-subtle px-2' }, 'Este espacio no tiene terminales ni archivos fijados.')]));
+}
+
+/**
+ * Tareas + una terminal propia de esta vista. La terminal usa un id fijo por
+ * workspace (`loop-term-<profileId>`) y se registra en liveTiles con su
+ * profileId: así se re-adjunta igual al volver, `killWorkspace` la mata al
+ * cerrar el workspace, y el traspaso a otra ventana (031) la reconecta por
+ * el mismo id. No está en profile.tiles, así que el mosaico no la ve.
+ */
+async function mountRight() {
+  const profile = state.profile;
+  if (!profile || rightMounted?.profileId === profile.id) return;
+  unmountRight();
+  const mounted = { profileId: profile.id, tasks: null, termRoot: null };
+  rightMounted = mounted;
+
+  if (!profile.cwd) {
+    tasksSlotEl.replaceChildren(h('p', { class: 'text-xs text-fg-subtle p-3' },
+      'Este espacio no tiene carpeta: las tareas viven en .ybento/tasks/ del proyecto.'));
+  }
+
+  // Import perezoso: terminal.js y tasksTile.js no hacen falta hasta expandir.
+  const [{ createTasksTile }, { createTerminalTile }] = await Promise.all([
+    import('./tasksTile.js'), import('./terminal.js'),
+  ]);
+  if (rightMounted !== mounted) return; // se contrajo o cambió el workspace mientras cargaba
+
+  if (profile.cwd) {
+    mounted.tasks = createTasksTile({ id: `loop-tasks-${profile.id}`, kind: 'tasks' });
+    tasksSlotEl.replaceChildren(mounted.tasks.root);
+  }
+  const term = await createTerminalTile(
+    { id: `loop-term-${profile.id}`, kind: 'terminal', title: 'Terminal', cwd: profile.cwd || undefined },
+    profile.id,
+  );
+  if (rightMounted !== mounted) return;
+  mounted.termRoot = term.root;
+  termSlotEl.replaceChildren(term.root);
+  requestAnimationFrame(() => { try { liveTiles.get(`loop-term-${profile.id}`)?.meta?.fit?.fit(); } catch { /* noop */ } });
+}
+
+/** Suelta la columna derecha. La terminal NO muere: se aparca como los tiles vivos. */
+function unmountRight() {
+  if (!rightMounted) return;
+  try { rightMounted.tasks?.shutdown?.(); } catch { /* noop */ }
+  if (rightMounted.termRoot) document.getElementById('tile-holding-area')?.append(rightMounted.termRoot);
+  tasksSlotEl?.replaceChildren();
+  termSlotEl?.replaceChildren();
+  rightMounted = null;
 }
 
 /* ---------- Estructura ---------- */
@@ -360,7 +662,7 @@ function buildChrome() {
 
   const title = h('div', { class: 'text-xs text-fg-soft flex-1 flex items-center gap-1.5' }, [
     h('span', { class: 'text-accent-soft flex items-center' }, svgIcon('loop', { size: 14 })),
-    h('span', {}, 'Loop'),
+    h('span', {}, 'Loop de agentes'),
   ]);
 
   markReadBtn = h('button', {
@@ -370,8 +672,16 @@ function buildChrome() {
     onClick: markAllRead,
   }, [svgIcon('check', { size: 12 }), h('span', {}, 'Todo leído')]);
 
-  const header = h('div', { class: 'flex items-center gap-1.5 px-2 py-1.5 border-b border-line shrink-0' }, [
+  expandBtn = h('button', {
+    class: 'inline-flex items-center gap-1 text-[10px] text-fg-muted hover:text-fg px-1.5 py-0.5 rounded shrink-0 '
+      + 'border border-line hover:bg-bg-elev transition',
+    title: 'Ver el loop a pantalla completa, con tareas y una terminal',
+    onClick: () => setExpanded(!isExpanded),
+  }, [svgIcon('external', { size: 11 }), h('span', {}, 'Expandir')]);
+
+  const header = h('div', { class: 'loop-header flex items-center gap-1.5 px-2 py-1.5 border-b border-line shrink-0' }, [
     title,
+    expandBtn,
     markReadBtn,
     h('button', {
       class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg px-1 shrink-0',
@@ -380,18 +690,42 @@ function buildChrome() {
     }, svgIcon('file', { size: 14 })),
     h('button', {
       class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg px-1 shrink-0',
-      title: 'Cerrar loop',
+      title: 'Cerrar loop de agentes',
       onClick: closeSidebar,
     }, svgIcon('close', { size: 15 })),
   ]);
 
-  rosterEl = h('div', { class: 'shrink-0 border-b border-line px-1.5 py-1.5' });
-  streamEl = h('div', { class: 'flex-1 overflow-y-auto px-2 py-2 space-y-2' });
-  emptyEl = h('div', { class: 'hidden px-3 py-6 text-center text-[11px] text-fg-subtle leading-relaxed' });
-  composerEl = h('div', { class: 'shrink-0 border-t border-line p-2' });
+  rosterEl = h('div', { class: 'loop-roster shrink-0 border-b border-line px-1.5 py-1.5' });
+  streamEl = h('div', { class: 'loop-stream flex-1 overflow-y-auto px-2 py-2 space-y-2' });
+  emptyEl = h('div', { class: 'loop-empty hidden px-3 py-6 text-center text-[11px] text-fg-subtle leading-relaxed' });
+  composerEl = h('div', { class: 'loop-composer shrink-0 px-2.5 pt-1 pb-2.5' });
+  thinkingEl = h('div', { class: 'loop-thinking hidden', 'aria-live': 'polite' });
+  composerEl.append(thinkingEl);
+
+  // Sólo en la vista expandida (el CSS los oculta en el panel lateral).
+  tilesListEl = h('div', { class: 'flex-1 overflow-y-auto space-y-0.5' });
+  const leftEl = h('div', { class: 'loop-left flex-col min-h-0 px-2 py-2' }, [
+    h('div', { class: 'loop-col-title' }, 'Terminales y documentos'),
+    tilesListEl,
+    h('button', {
+      class: 'mt-2 w-full text-xs font-medium text-white py-2 rounded-md bg-red-600 hover:bg-red-700 transition',
+      onClick: closeSidebar,
+    }, 'Cerrar chat de agentes'),
+  ]);
+  tasksSlotEl = h('div', { class: 'loop-slot loop-slot-tasks min-h-0 relative' });
+  termSlotEl = h('div', { class: 'loop-slot flex-1 min-h-0 relative' });
+  const rightEl = h('div', { class: 'loop-right flex-col min-h-0' });
+  const { leftHandle, rightHandle, rowHandle } = buildSplitters(rightEl);
+  rightEl.append(
+    tasksSlotEl,
+    rowHandle,
+    h('div', { class: 'loop-col-title px-2 pt-1' }, 'Terminal'),
+    termSlotEl,
+  );
+  for (const name of Object.keys(SPLITS)) writeSplit(name, readSplit(name));
 
   panelEl.append(
-    header, rosterEl, streamEl, emptyEl, composerEl,
+    header, rosterEl, streamEl, emptyEl, composerEl, leftEl, rightEl, leftHandle, rightHandle,
     makeResizeHandle({ panel: panelEl, ...WIDTH_OPTS }),
   );
   panelEl.classList.add('flex', 'flex-col');
@@ -407,6 +741,7 @@ async function refresh() {
     ]);
     renderRoster(agents, presence || {});
     renderStream(messages, agents);
+    renderThinking(agents, presence || {});
     applyUnread(messages);
     renderComposer(agents);
   } catch (err) {
@@ -504,7 +839,7 @@ function agentRow(agent, presence) {
   const tint = colorOf(agent);
 
   return h('div', {
-    class: 'group flex items-center gap-1.5 pl-2 pr-1.5 py-1 rounded-md hover:bg-bg-elev transition cursor-pointer',
+    class: 'group flex items-center gap-1.5 pl-2 pr-1.5 py-1.5 mb-1 rounded-md hover:bg-bg-elev transition cursor-pointer',
     style: `border-left: 3px solid ${tint}`,
     // El rol se ve cortado a una línea en la fila, así que el tooltip es el
     // único lugar donde se puede leer sin abrir el editor.
@@ -519,7 +854,7 @@ function agentRow(agent, presence) {
       h('div', {
         class: 'text-xs truncate font-medium',
         style: `color: color-mix(in srgb, ${tint} 75%, var(--color-fg))`,
-      }, `@${agent.name}`),
+      }, `${agent.emoji ? `${agent.emoji} ` : ''}@${agent.name}`),
       subtitle,
     ]),
     h('div', { class: 'hidden group-hover:flex gap-0.5 shrink-0' }, [
@@ -556,11 +891,11 @@ function agentRow(agent, presence) {
  * no aplica (firma de colores cambió, ids fuera de orden, archivo rehecho).
  * El peor caso sigue siendo el comportamiento anterior.
  */
-function rebuildStream(messages, colors) {
+function rebuildStream(messages, colors, sig) {
   streamEl.innerHTML = '';
   for (const msg of messages) streamEl.append(messageRow(msg, colors));
   renderedIds = messages.map((m) => m.id);
-  renderedSig = JSON.stringify(colors);
+  renderedSig = sig;
 }
 
 function renderStream(messages, agents) {
@@ -582,13 +917,15 @@ function renderStream(messages, agents) {
   // El color es el del *emisor*: lo que se busca al barrer el hilo es
   // "qué dijo @qa", no a quién se lo dijo.
   const colors = Object.fromEntries(agents.map((a) => [a.name, colorOf(a)]));
-  const sig = JSON.stringify(colors);
+  agentEmojis = Object.fromEntries(agents.map((a) => [a.name, a.emoji || null]));
+  // Si cambia un color o un emoji, las burbujas ya pintadas quedan viejas.
+  const sig = JSON.stringify([colors, agentEmojis]);
 
   // RED: la firma de colores cambió (agente renombrado, color editado,
   // agente nuevo o que salió). Evento raro, siempre disparado por el usuario
   // desde un modal, no por el poll — el parpadeo es aceptable.
   if (sig !== renderedSig) {
-    rebuildStream(messages, colors);
+    rebuildStream(messages, colors, sig);
     if (atBottom) queueMicrotask(() => { streamEl.scrollTop = streamEl.scrollHeight; });
     return;
   }
@@ -601,7 +938,7 @@ function renderStream(messages, agents) {
   // RED: todos los ids previos desaparecieron (archivo borrado o workspace
   // cambiado pese al reset en profile:loaded).
   if (renderedIds.length > 0 && kept.length === 0) {
-    rebuildStream(messages, colors);
+    rebuildStream(messages, colors, sig);
     if (atBottom) queueMicrotask(() => { streamEl.scrollTop = streamEl.scrollHeight; });
     return;
   }
@@ -610,7 +947,7 @@ function renderStream(messages, agents) {
   // Ocurre si el archivo fue truncado o si una lectura parcial corrió los seq
   // (caso documentado en spec 023: la clave es id, no seq).
   if (kept.some((id, i) => id !== newIds[i])) {
-    rebuildStream(messages, colors);
+    rebuildStream(messages, colors, sig);
     if (atBottom) queueMicrotask(() => { streamEl.scrollTop = streamEl.scrollHeight; });
     return;
   }
@@ -619,7 +956,7 @@ function renderStream(messages, agents) {
   // borró streamEl sin resetear el estado, o cualquier otro camino que toque
   // streamEl sin avisar). Previene que el hilo se congele en el cartel de error.
   if (streamEl.children.length !== renderedIds.length) {
-    rebuildStream(messages, colors);
+    rebuildStream(messages, colors, sig);
     if (atBottom) queueMicrotask(() => { streamEl.scrollTop = streamEl.scrollHeight; });
     return;
   }
@@ -705,12 +1042,21 @@ function messageRow(msg, colors = {}) {
       : null,
   }, parts);
 
+  // Avatar estilo red social: el emoji del agente (o su inicial). Siempre se
+  // crea, pero el CSS sólo lo muestra en la vista expandida — en el panel
+  // lateral el ancho es para el texto.
+  const avatar = mine ? null : h('div', {
+    class: 'loop-avatar',
+    style: tint ? `border-color: ${tint}; background: color-mix(in srgb, ${tint} 18%, var(--color-bg-elev));` : null,
+    title: `@${msg.from}`,
+  }, agentEmojis[msg.from] || msg.from.charAt(0).toUpperCase());
+
   // data-id / data-to: los usa paintUnreadStream para marcar sin redibujar.
   return h('div', {
     class: `loop-row flex ${mine ? 'justify-end' : 'justify-start'}`,
     'data-id': msg.id,
     'data-to': msg.to,
-  }, [bubble]);
+  }, avatar ? [avatar, bubble] : [bubble]);
 }
 
 /**
@@ -763,12 +1109,16 @@ function formatTime(iso) {
 function ensureComposerBox() {
   if (composerBoxEl) return;
 
-  pillsContainerEl = h('div', { class: 'flex flex-wrap gap-1 mb-1.5' });
+  // Caja estilo chat moderno (referencia: el input de Claude): una sola
+  // tarjeta redondeada con el texto arriba y, adentro, una barra con los
+  // destinatarios a la izquierda y un botón circular de enviar a la derecha.
+  // El botón azul de ancho completo se comía la atención del hilo.
+  pillsContainerEl = h('div', { class: 'flex flex-wrap gap-1 min-w-0' });
 
   composerInput = h('textarea', {
     rows: '2',
-    class: 'w-full bg-bg-elev border border-line rounded-md px-2 py-1.5 text-xs resize-none '
-      + 'focus:outline-none focus:ring-1 focus:ring-accent placeholder:text-fg-subtle/70',
+    class: 'w-full bg-transparent border-0 px-1 py-0.5 text-sm text-fg resize-none leading-relaxed '
+      + 'focus:outline-none placeholder:text-fg-subtle/70',
     spellcheck: 'false',
   });
 
@@ -787,7 +1137,11 @@ function ensureComposerBox() {
     composerInput.value = '';
     composerInput._reset?.();
     try {
-      await window.yusepe.loop.post(cwd(), { from: 'usuario', to, text });
+      // seenUpTo: el último mensaje que había en pantalla al escribir — es
+      // el "hasta dónde leí" del humano (ver loopOps.postMessage).
+      await window.yusepe.loop.post(cwd(), {
+        from: 'usuario', to, text, seenUpTo: lastMessages[lastMessages.length - 1]?.id || null,
+      });
       target = to;
       await refresh();
     } catch (err) {
@@ -796,6 +1150,7 @@ function ensureComposerBox() {
       // sola: el borrador vuelve pero la caja queda en la altura mínima con
       // overflow oculto. Hay que llamarla explícitamente.
       resize();
+      paintSend();
       toast.error(err?.message || String(err));
     }
   };
@@ -809,12 +1164,20 @@ function ensureComposerBox() {
   });
 
   composerSendBtn = h('button', {
-    class: 'mt-1.5 w-full flex items-center justify-center gap-1.5 text-xs px-2 py-1.5 rounded-md '
-      + 'bg-accent hover:bg-accent-soft text-white transition',
+    class: 'loop-send shrink-0',
     onClick: send,
-  }, [svgIcon('send', { size: 12 }), h('span', {}, 'Enviar')]);
+  }, svgIcon('arrow-up', { size: 15 }));
+  // El botón se "enciende" sólo cuando hay algo para mandar.
+  const paintSend = () => composerSendBtn.classList.toggle('is-ready', !!composerInput.value.trim());
+  composerInput.addEventListener('input', paintSend);
 
-  composerBoxEl = h('div', {}, [pillsContainerEl, composerInput, composerSendBtn]);
+  const toolbar = h('div', { class: 'flex items-end justify-between gap-2 mt-1.5' }, [
+    pillsContainerEl, composerSendBtn,
+  ]);
+  composerBoxEl = h('div', {}, [
+    h('div', { class: 'loop-input' }, [composerInput, toolbar]),
+    h('p', { class: 'text-[10px] text-fg-subtle/70 text-center mt-1.5' }, 'Enter envía · Shift+Enter, nueva línea'),
+  ]);
   composerEl.append(composerBoxEl);
 
   // Medir minH con el textarea vacío: es el estado legítimo al crear la caja.
@@ -831,7 +1194,7 @@ function ensureComposerBox() {
     composerInput.style.height = 'auto';
     const natural = composerInput.scrollHeight;
     const maxComposer = panelEl.offsetHeight * 0.33;
-    const fixed = pillsContainerEl.offsetHeight + composerSendBtn.offsetHeight + 20;
+    const fixed = toolbar.offsetHeight + 48;
     const maxH = Math.max(minH, maxComposer - fixed);
     const next = Math.min(Math.max(natural, minH), maxH);
     composerInput.style.height = `${next}px`;
@@ -844,6 +1207,7 @@ function ensureComposerBox() {
   composerInput._reset = () => {
     composerInput.style.height = `${minH}px`;
     composerInput.style.overflowY = 'hidden';
+    paintSend();
   };
 }
 
@@ -881,12 +1245,9 @@ function renderPills(agents) {
   }
 
   if (composerInput) {
-    composerInput.placeholder = `Mensaje para @${target}…  (Enter envía)`;
+    composerInput.placeholder = `Mensaje para @${target}…`;
   }
-  if (composerSendBtn) {
-    const span = composerSendBtn.querySelector('span');
-    if (span) span.textContent = `Enviar a @${target}`;
-  }
+  if (composerSendBtn) composerSendBtn.title = `Enviar a @${target} (Enter)`;
 }
 
 function renderComposer(agents) {
@@ -993,6 +1354,33 @@ function openAgentEditor(existing, tile, taken = []) {
   };
   paintSwatches();
 
+  // Emoji de avatar (se ve en el hilo expandido y en el roster). Campo libre
+  // para pegar cualquiera, más una tira de sugerencias para no tener que
+  // abrir el selector del sistema. La validación de verdad está en loopOps.
+  const emojiInput = h('input', {
+    type: 'text',
+    value: existing?.emoji || '',
+    maxlength: '16',
+    placeholder: '🙂',
+    class: 'w-14 h-10 bg-bg-elev border border-line rounded-md text-center text-xl focus:outline-none focus:ring-1 focus:ring-accent',
+  });
+  const EMOJI_PICKS = ['🤖', '🧠', '🦾', '👾', '🦊', '🐙', '🦉', '🐝', '🚀', '⚡', '🔧', '🛠️',
+    '🧪', '🔍', '📐', '🎨', '🧭', '🛡️', '📦', '🐳', '🔥', '🌱', '👩‍💻', '🧙'];
+  const emojiRow = h('div', { class: 'flex items-start gap-2 mb-1' }, [
+    emojiInput,
+    h('div', { class: 'flex flex-wrap gap-0.5 flex-1' }, [
+      ...EMOJI_PICKS.map((e) => h('button', {
+        class: 'w-7 h-7 rounded-md text-base hover:bg-bg-elev transition',
+        title: `Usar ${e}`,
+        onClick: () => { emojiInput.value = e; },
+      }, e)),
+      h('button', {
+        class: 'h-7 px-2 rounded-md text-[10px] text-fg-subtle hover:text-fg hover:bg-bg-elev transition',
+        onClick: () => { emojiInput.value = ''; },
+      }, 'Sin emoji'),
+    ]),
+  ]);
+
   const error = h('div', { class: 'text-xs text-red-400 mt-2 hidden' });
 
   const save = async () => {
@@ -1010,9 +1398,13 @@ function openAgentEditor(existing, tile, taken = []) {
         await window.yusepe.loop.unregister(cwd(), existing.name);
       }
 
-      await window.yusepe.loop.register(cwd(), {
+      const saved = await window.yusepe.loop.register(cwd(), {
         name, role: roleInput.value.trim(), tileId: tile?.id || existing?.tileId || null, color,
+        emoji: emojiInput.value.trim(),
       });
+      if (emojiInput.value.trim() && !saved?.emoji) {
+        toast.warning('Ese texto no es un emoji: el agente quedó sin avatar.');
+      }
       // El protocolo tiene que existir antes del primer mensaje: es la ruta
       // que el repartidor le pasa al agente al pegarle en la terminal.
       await window.yusepe.loop.ensureSkill(cwd());
@@ -1056,6 +1448,10 @@ function openAgentEditor(existing, tile, taken = []) {
 
       h('label', { class: 'text-xs text-fg-subtle block mb-1' }, 'Color'),
       swatches,
+      h('label', { class: 'text-xs text-fg-subtle block mb-1 mt-3' }, 'Emoji'),
+      emojiRow,
+      h('p', { class: 'text-[10px] text-fg-subtle/70 mb-3' },
+        'Su avatar en el hilo cuando el loop está expandido.'),
       h('p', { class: 'text-[10px] text-fg-subtle/70 mb-3' },
         'Con qué color se marcan sus mensajes en el hilo. Es sólo para distinguirlos de un '
         + 'vistazo — los agentes no lo ven.'),

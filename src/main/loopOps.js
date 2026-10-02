@@ -161,6 +161,19 @@ const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 const safeColor = (value) => (HEX_COLOR.test(String(value || '')) ? String(value).toLowerCase() : null);
 
 /**
+ * Emoji de avatar del agente. Mismo criterio que el color: status.json se
+ * edita a mano, así que se valida al escribir y al leer. Tiene que llevar
+ * al menos un pictograma y nada de letras, espacios ni caracteres de
+ * markup — un emoji compuesto (👩🏽‍💻, 🏳️‍🌈) mide varios code units, de ahí
+ * el tope de 16 y no de 2.
+ */
+const EMOJI_OK = /^[^\s\p{L}\p{N}<>"'`\\&]{1,16}$/u;
+const safeEmoji = (value) => {
+  const s = String(value ?? '').trim();
+  return EMOJI_OK.test(s) && /\p{Extended_Pictographic}/u.test(s) ? s : null;
+};
+
+/**
  * Registra (o actualiza) una terminal en el loop.
  *
  * `role` es la descripción corta que explica de qué se encarga — la leen
@@ -170,7 +183,7 @@ const safeColor = (value) => (HEX_COLOR.test(String(value || '')) ? String(value
  * Registrar de nuevo un agente existente conserva su estado y su cursor:
  * renombrar el rol no debe reenviarle toda la bandeja.
  */
-export async function registerAgent(cwd, { name, role = '', tileId = null, color = null } = {}) {
+export async function registerAgent(cwd, { name, role = '', tileId = null, color = null, emoji } = {}) {
   const id = normalizeName(name);
   return updateStatus(cwd, (status) => {
     const prev = status.agents[id] || {};
@@ -180,6 +193,8 @@ export async function registerAgent(cwd, { name, role = '', tileId = null, color
       state: STATES.includes(prev.state) ? prev.state : 'waiting',
       tileId: tileId ?? prev.tileId ?? null,
       color: safeColor(color) ?? safeColor(prev.color),
+      // `emoji: ''` lo borra; sin el campo, se conserva el que tenía.
+      emoji: emoji === undefined ? safeEmoji(prev.emoji) : safeEmoji(emoji),
       cursor: prev.cursor ?? null,
       updatedAt: new Date().toISOString(),
     };
@@ -207,7 +222,7 @@ export async function listAgents(cwd) {
   const status = await readStatusRaw(cwd);
   return Object.values(status.agents)
     .filter((a) => a && typeof a.name === 'string')
-    .map((a) => ({ ...a, color: safeColor(a.color) }))
+    .map((a) => ({ ...a, color: safeColor(a.color), emoji: safeEmoji(a.emoji) }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -287,7 +302,7 @@ export async function readDirty(cwd) {
  * Postea un mensaje. `from` puede ser un agente o `usuario` (el humano
  * escribiendo desde el panel lateral).
  */
-export async function postMessage(cwd, { from, to, text, replyTo = null } = {}) {
+export async function postMessage(cwd, { from, to, text, replyTo = null, seenUpTo: seenByUser = null } = {}) {
   const body = String(text ?? '').trim();
   if (!body) throw new Error('El mensaje no puede estar vacío');
 
@@ -297,8 +312,14 @@ export async function postMessage(cwd, { from, to, text, replyTo = null } = {}) 
   // Con esto se detectan los cruces: si A responde algo que fue escrito
   // antes de recibir el último mensaje de B, los dos hablaron a la vez y
   // ninguno de los dos se entera mirando sólo el texto.
+  //
+  // El agente tiene cursor en status.json. El humano no: lee el hilo en el
+  // panel. Para él, "hasta dónde leyó" es el último mensaje que tenía en
+  // pantalla al enviar, y lo manda el panel. Sin esto sus mensajes salían
+  // todos con seenUpTo null (87 de 87, medido en campo) y no había forma de
+  // saber si escribió viendo lo último de los agentes.
   const seenUpTo = sender === 'usuario'
-    ? null
+    ? (typeof seenByUser === 'string' && /^[\w-]{1,64}$/.test(seenByUser) ? seenByUser : null)
     : (await getAgent(cwd, sender))?.cursor ?? null;
 
   const message = {
@@ -385,6 +406,11 @@ export async function findMessage(cwd, ref) {
  * @param {object[]} all todos los mensajes, en orden (con su `seq`)
  */
 export function crossedMessages(all, message) {
+  // Un mensaje del usuario sin seenUpTo es de antes de que el panel lo
+  // mandara: no hay dato, no es "nunca leyó nada". Tomarlo así marcaba como
+  // no vistos TODOS los reportes que le habían mandado (campo, #307).
+  if (message.from === 'usuario' && !message.seenUpTo) return [];
+
   const mine = all.findIndex((m) => m.id === message.id);
   if (mine === -1) return [];
 
@@ -393,7 +419,10 @@ export function crossedMessages(all, message) {
     ? all.findIndex((m) => m.id === message.seenUpTo)
     : -1;
 
-  return all.slice(seenIdx + 1, mine).filter((m) => m.to === message.from);
+  // Sólo los del destinatario al autor: el aviso dice "no vio TUS mensajes",
+  // y lo que le escribió un tercero no es un cruce entre estos dos.
+  return all.slice(seenIdx + 1, mine)
+    .filter((m) => m.to === message.from && m.from === message.to);
 }
 
 /**

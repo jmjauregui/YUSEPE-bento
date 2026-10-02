@@ -74,13 +74,17 @@
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="w-[17px] h-[17px]"><path d="M8 6 4 12l4 6M16 6l4 6-4 6"/></svg>
         </button>
+        <!-- El loop es el centro de Bento (ver spec/constitution/constitution.md):
+             pastilla con nombre, separada del grupo de íconos, no un ícono más. -->
+        <span class="w-px h-5 bg-line mx-1" aria-hidden="true"></span>
         <button
           id="btn-toggle-loop"
           disabled
-          class="relative inline-flex items-center justify-center w-8 h-8 rounded-md text-fg-muted hover:text-fg hover:bg-bg-elev transition disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-fg-muted"
-          title="Loop — mensajería entre terminales"
+          class="loop-pill inline-flex items-center gap-1.5 h-8 px-2.5 mr-1 rounded-md border border-line text-xs font-medium text-fg-soft hover:text-fg hover:bg-bg-elev transition disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-fg-soft"
+          title="Loop de agentes (⇧⌘L)"
         >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="w-[17px] h-[17px]"><path d="M4 9a4 4 0 0 1 4-4h8a4 4 0 0 1 0 8H8a4 4 0 0 0 0 8h8a4 4 0 0 0 4-4"/><path d="M7 6 4 9l3 3M17 15l3 3-3 3"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="w-[15px] h-[15px]"><path d="M4 9a4 4 0 0 1 4-4h8a4 4 0 0 1 0 8H8a4 4 0 0 0 0 8h8a4 4 0 0 0 4-4"/><path d="M7 6 4 9l3 3M17 15l3 3-3 3"/></svg>
+          <span>Loop de agentes</span>
           <span id="loop-unread-badge" class="loop-badge hidden" data-no-tip></span>
         </button>
         <button
@@ -97,7 +101,7 @@
           class="inline-flex items-center justify-center w-8 h-8 rounded-md text-fg-muted hover:text-fg hover:bg-bg-elev transition"
           title="Configuración"
         >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="w-[17px] h-[17px]"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2 2M17 17l2 2M19.1 4.9l-2 2M7 17l-2 2"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="w-[17px] h-[17px]"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         </button>
         <div class="w-px h-5 bg-line mx-1"></div>
         <select

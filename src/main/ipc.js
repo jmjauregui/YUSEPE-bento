@@ -18,7 +18,7 @@ import * as agentOps from './agentOps.js';
 import * as tasksOps from './tasksOps.js';
 import * as pexelsOps from './pexelsOps.js';
 import * as loopOps from './loopOps.js';
-import { createDispatcher, looksLikeShell } from './loopDispatcher.js';
+import { bracketedPasteState, createDispatcher, looksLikeShell } from './loopDispatcher.js';
 import { buildPtyEnv, ensureShim } from './loopShim.js';
 import { createWriteQueue } from './ptyWriteQueue.js';
 import { SnippetsStore } from './snippetsOps.js';
@@ -365,10 +365,15 @@ export function registerIpc({ app, profilesDir, broadcast = () => {} }) {
     const entry = {
       proc, writer: null, sender: event.sender, senderId: event.sender.id, shell: useShell,
       ring: new OutputRing(),
+      // Si el programa de adentro pidió bracketed paste (Claude Code,
+      // opencode): el repartidor del loop envuelve sus avisos en esos
+      // marcadores. Ver loopDispatcher.bracketedPasteState.
+      bracketed: false,
     };
 
     proc.onData((data) => {
       entry.ring.push(data);
+      entry.bracketed = bracketedPasteState(entry.bracketed, data);
       if (!entry.sender.isDestroyed()) {
         entry.sender.send(`pty:data:${ptyId}`, data);
       }
@@ -450,6 +455,7 @@ export function registerIpc({ app, profilesDir, broadcast = () => {} }) {
       const entry = ptys.get(ptyId);
       return entry ? { process: entry.proc.process, shell: entry.shell } : null;
     },
+    isBracketedPaste: (ptyId) => !!ptys.get(ptyId)?.bracketed,
     onDelivered: (info) => notifyLoop('loop:delivered', info),
     onChange: () => notifyLoop('loop:changed', {}),
     onPresence: (info) => notifyLoop('loop:presence', info),
@@ -466,8 +472,8 @@ export function registerIpc({ app, profilesDir, broadcast = () => {} }) {
     if (!entry) return false;
     return looksLikeShell({ process: entry.proc.process, shell: entry.shell });
   });
-  ipcMain.handle('loop:register', (_e, { cwd, name, role, tileId, color }) =>
-    loopOps.registerAgent(cwd, { name, role, tileId, color }));
+  ipcMain.handle('loop:register', (_e, { cwd, name, role, tileId, color, emoji }) =>
+    loopOps.registerAgent(cwd, { name, role, tileId, color, emoji }));
   ipcMain.handle('loop:unregister', (_e, { cwd, name }) => {
     dispatcher.unbind(name, cwd);
     return loopOps.unregisterAgent(cwd, name);
@@ -477,8 +483,8 @@ export function registerIpc({ app, profilesDir, broadcast = () => {} }) {
 
   ipcMain.handle('loop:messages', (_e, { cwd, to, limit }) =>
     loopOps.listMessages(cwd, { to, limit }));
-  ipcMain.handle('loop:post', (_e, { cwd, from, to, text, replyTo }) =>
-    loopOps.postMessage(cwd, { from: from || 'usuario', to, text, replyTo }));
+  ipcMain.handle('loop:post', (_e, { cwd, from, to, text, replyTo, seenUpTo }) =>
+    loopOps.postMessage(cwd, { from: from || 'usuario', to, text, replyTo, seenUpTo }));
   ipcMain.handle('loop:inbox', (_e, { cwd, name }) => loopOps.inbox(cwd, name));
 
   ipcMain.handle('loop:skill', (_e, { cwd }) => loopOps.readSkill(cwd));
