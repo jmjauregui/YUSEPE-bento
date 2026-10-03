@@ -38,7 +38,7 @@ import { labelFor } from './workspaceManager.js';
 import { thinkingPhrase, workingFor, thinkingLine } from '../core/loopThinking.js';
 import { renderMarkdown } from '../core/markdown.js';
 import {
-  badgeLabel, cursorAtEnd, ensureCursor, saveCursor, unreadSummary,
+  badgeLabel, cursorAtEnd, ensureCursor, saveCursor, unreadSummary, unreadTitle,
 } from '../core/loopUnread.js';
 import { applySavedWidth, makeResizeHandle } from '../utils/resizableSidebar.js';
 import { getPanelPosition, panelLayout, expandClip, ALL_POSITION_CLASSES } from '../core/panelPosition.js';
@@ -267,6 +267,7 @@ let lastNotifiedAt = 0;
 let unread = { count: 0, forUser: false, ids: new Set() };
 let lastMessages = [];
 let markReadBtn = null;
+let unreadPillEl = null;
 
 const cwd = () => state.profile?.cwd || null;
 
@@ -438,6 +439,14 @@ function paintUnreadBadge() {
   badge.classList.toggle('hidden', !unread.count);
   // Acento si alguno es para vos; neutro si son sólo charlas entre agentes.
   badge.classList.toggle('is-user', unread.forUser);
+
+  // Contador de la pastilla: misma variable, un solo cálculo.
+  if (unreadPillEl) {
+    const label = badgeLabel(unread.count);
+    unreadPillEl.textContent = label;
+    unreadPillEl.classList.toggle('hidden', !label);
+    unreadPillEl.setAttribute('aria-label', unreadTitle(unread.count));
+  }
 }
 
 /**
@@ -459,7 +468,7 @@ function paintUnreadStream() {
 function paintMarkReadBtn() {
   if (!markReadBtn) return;
   markReadBtn.disabled = !unread.count;
-  markReadBtn.lastChild.textContent = unread.count ? `Marcar leído (${badgeLabel(unread.count)})` : 'Todo leído';
+  // El contador de no leídos viaja en la pastilla del título (047), no aquí.
 }
 
 export function isLoopSidebarOpen() {
@@ -887,24 +896,29 @@ function buildChrome() {
   renderedIds = []; renderedSig = null;
   rosterListEl = null; observerSelectEl = null; observerSig = null; pendingObserverUpdate = null;
   searchState = null; searchBarEl = null; searchInputEl = null; searchCountEl = null; searchLupaBtn = null; navPrevBtn = null; navNextBtn = null; forceBottomNextRender = false;
+  unreadPillEl = null;
   currentPresence = {};
   streaks.clear();
   stopBlinkClock();
 
-  const title = h('div', { class: 'text-xs text-fg-soft flex-1 flex items-center gap-1.5' }, [
-    h('span', { class: 'text-accent-soft flex items-center' }, svgIcon('loop', { size: 14 })),
+  unreadPillEl = h('span', { class: 'hidden tabular-nums text-[10px]' });
+  const title = h('span', { class: 'loop-title shrink-0 whitespace-nowrap flex items-center gap-1' }, [
+    h('span', { class: 'loop-title-icon flex items-center' }, svgIcon('loop', { size: 14 })),
     h('span', {}, 'Loop de agentes'),
+    unreadPillEl,
   ]);
 
   rosterBtnEl = h('button', {
     class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg px-1 shrink-0',
     'aria-expanded': 'true',
+    'aria-label': 'Agentes del loop',
     title: 'Agentes del loop',
     onClick: () => accordion?.toggle(),
   }, svgIcon('agents', { size: 14 }));
 
   searchLupaBtn = h('button', {
     class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg px-1 shrink-0',
+    'aria-label': 'Buscar en el hilo',
     title: 'Buscar en el hilo (Ctrl+F)',
     onClick: openSearch,
   }, svgIcon('search', { size: 14 }));
@@ -912,30 +926,39 @@ function buildChrome() {
   markReadBtn = h('button', {
     class: 'inline-flex items-center gap-1 text-[10px] text-fg-muted hover:text-fg px-1.5 py-0.5 rounded shrink-0 '
       + 'disabled:opacity-40 disabled:hover:text-fg-muted',
+    'aria-label': 'Todo leído',
     title: 'Marcar todo como leído',
     onClick: markAllRead,
-  }, [svgIcon('check', { size: 12 }), h('span', {}, 'Todo leído')]);
+  }, [svgIcon('check', { size: 12 }), h('span', { class: 'loop-markread-label' }, 'Todo leído')]);
 
   expandBtn = h('button', {
     class: 'inline-flex items-center gap-1 text-[10px] text-fg-muted hover:text-fg px-1.5 py-0.5 rounded shrink-0 '
       + 'border border-line hover:bg-bg-elev transition',
+    'aria-label': 'Expandir loop',
     title: 'Ver el loop a pantalla completa, con tareas y una terminal',
     onClick: () => setExpanded(!isExpanded),
-  }, [svgIcon('external', { size: 11 }), h('span', {}, 'Expandir')]);
+  }, [svgIcon('external', { size: 11 }), h('span', { class: 'loop-expand-label' }, 'Expandir')]);
+
+  const skillBtn = h('button', {
+    class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg px-1 shrink-0',
+    'aria-label': 'Protocolo del loop',
+    title: 'Protocolo que leen los agentes (.ybento/loop/skill.md)',
+    onClick: openSkillEditor,
+  }, svgIcon('file', { size: 14 }));
+
+  const hueco = h('span', { class: 'flex-1 loop-spacer' });
 
   const iconRow = h('div', { class: 'flex items-center gap-1.5 px-2 py-1.5' }, [
-    title,
     expandBtn,
     rosterBtnEl,
-    markReadBtn,
-    h('button', {
-      class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg px-1 shrink-0',
-      title: 'Protocolo que leen los agentes (.ybento/loop/skill.md)',
-      onClick: openSkillEditor,
-    }, svgIcon('file', { size: 14 })),
     searchLupaBtn,
+    skillBtn,
+    hueco,
+    markReadBtn,
+    title,
     h('button', {
       class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg px-1 shrink-0',
+      'aria-label': 'Cerrar loop de agentes',
       title: 'Cerrar loop de agentes',
       onClick: closeSidebar,
     }, svgIcon('close', { size: 15 })),
@@ -980,7 +1003,7 @@ function buildChrome() {
     }
   });
 
-  const header = h('div', { class: 'border-b border-line shrink-0' }, [iconRow, searchBarEl]);
+  const header = h('div', { class: 'loop-header shrink-0' }, [iconRow, searchBarEl]);
 
   rosterEl = h('div', {
     id: 'loop-roster',

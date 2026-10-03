@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   badgeLabel, cursorAtEnd, ensureCursor, loadCursor, saveCursor, unreadMessages, unreadSummary,
+  unreadTitle,
 } from './loopUnread.js';
 
 const msg = (seq, from, to) => ({ id: `m${seq}`, seq, from, to, text: '' });
@@ -51,6 +52,21 @@ describe('badgeLabel', () => {
     expect(badgeLabel(7)).toBe('7');
     expect(badgeLabel(99)).toBe('99');
     expect(badgeLabel(100)).toBe('99+');
+  });
+});
+
+describe('unreadTitle', () => {
+  it('singular con 1', () => {
+    expect(unreadTitle(1)).toBe('1 mensaje sin leer');
+  });
+  it('plural con 5', () => {
+    expect(unreadTitle(5)).toBe('5 mensajes sin leer');
+  });
+  it('vacío con 0', () => {
+    expect(unreadTitle(0)).toBe('');
+  });
+  it('número real con 140, nunca 99+ (el recorte es sólo visual)', () => {
+    expect(unreadTitle(140)).toBe('140 mensajes sin leer');
   });
 });
 

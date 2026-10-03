@@ -49,6 +49,15 @@ export function badgeLabel(count) {
   return count > 99 ? '99+' : String(count);
 }
 
+/**
+ * Texto accesible del contador de no leídos (aria-label).
+ * Usa el número real, nunca '99+': el recorte visual no sirve a quien no ve la pantalla.
+ */
+export function unreadTitle(count) {
+  if (!count) return '';
+  return count === 1 ? '1 mensaje sin leer' : `${count} mensajes sin leer`;
+}
+
 /** Cursor que deja todo lo de `messages` como leído. */
 export function cursorAtEnd(messages) {
   const last = messages[messages.length - 1];

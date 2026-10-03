@@ -665,6 +665,58 @@
     box-shadow: 0 1px 2px rgb(0 0 0 / 0.12), 0 6px 24px rgb(0 0 0 / 0.16);
   }
 
+  /* ---- Encabezado del loop (047) ---- */
+  /* container-type: el ancho que manda es el del panel (lo arrastra el usuario),
+     no el de la ventana, así que @container y no media queries. */
+  #loop-sidebar { container-type: inline-size; }
+
+  /* Velo de color muy suave que reemplaza la línea divisoria: separa el encabezado
+     del hilo sin dibujar una segunda raya sobre el borde del roster. */
+  .loop-header {
+    background: linear-gradient(180deg,
+      color-mix(in srgb, var(--color-accent) 6%, transparent),
+      transparent);
+  }
+
+  /* Pastilla del título: fondo y borde de acento tenues vía color-mix, sirve en
+     los dos temas sin reglas adicionales. shrink-0 + nowrap: el criterio 1 (el
+     título nunca se parte, nunca se encoge). */
+  #loop-sidebar .loop-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.2rem 0.5rem;
+    font-size: 0.72rem;
+    font-weight: 600;
+    white-space: nowrap;
+    flex-shrink: 0;
+    background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-accent) 32%, transparent);
+    border-radius: 999px;
+    color: var(--color-fg);
+  }
+  /* Ícono del loop dentro de la pastilla: mezclado hacia --color-fg para que no
+     quede flojo en tema claro (mismo recurso que el nombre del agente en el hilo). */
+  #loop-sidebar .loop-title svg {
+    color: color-mix(in srgb, var(--color-accent) 75%, var(--color-fg));
+  }
+
+  /* Orden de sacrificio con @container — qué cede cuando no entra, y en qué orden.
+     L1: "Todo leído" pierde su etiqueta; L2: "Expandir" pierde su etiqueta;
+     L3: el hueco se reduce a cero; L4: la pastilla pierde su ícono.
+     NINGÚN BOTÓN desaparece en ningún ancho: display:none sólo en el <span> del texto,
+     nunca en el botón, así el aria-label y el ícono siguen siendo accesibles. */
+  @container (max-width: 400px) {
+    .loop-markread-label { display: none; }
+  }
+  @container (max-width: 350px) {
+    .loop-expand-label { display: none; }
+  }
+  @container (max-width: 310px) {
+    .loop-spacer { flex: 0; min-width: 0; }
+    .loop-title-icon { display: none; }
+  }
+
   /* ---- Compositor flotante (045) ---- */
   /* El hilo recibe padding inferior dinámico; el fallback cubre el compositor vacío.
      id en el selector: Tailwind genera .py-2 (misma especificidad) después de esta
