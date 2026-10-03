@@ -1042,7 +1042,7 @@ function buildChrome() {
   composerEl.append(thinkingEl);
 
   // Sólo en la vista expandida (el CSS los oculta en el panel lateral).
-  tilesListEl = h('div', { class: 'flex-1 overflow-y-auto space-y-0.5' });
+  tilesListEl = h('div', { class: 'flex-1 overflow-y-auto space-y-0.5 loop-tiles' });
   const leftEl = h('div', { class: 'loop-left flex-col min-h-0 px-2 py-2' }, [
     h('div', { class: 'loop-col-title' }, 'Terminales y documentos'),
     tilesListEl,

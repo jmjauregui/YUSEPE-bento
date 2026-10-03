@@ -76,6 +76,7 @@
    sin wallpaper); bentoGrid.js lo pisa por workspace. */
 :root {
   --term-tile-opacity: 1;
+  --scrollbar-w: 10px; /* ancho compartido por la barra del loop y el margen del compositor */
 }
 
 /* Scrollbar de la terminal al estilo macOS: pill finita y translúcida,
@@ -87,7 +88,9 @@
    OJO: esto vive FUERA de @layer components a propósito. Tailwind purga
    las reglas de esa capa cuyo selector no aparece en los archivos del
    content, y `.xterm-viewport` lo crea xterm en runtime — adentro de la
-   capa, la regla desaparece del bundle en silencio. */
+   capa, la regla desaparece del bundle en silencio. Lo mismo aplica a los
+   selectores del loop que se suman al grupo: `.loop-stream`,
+   `.loop-composer textarea` y `.loop-tiles` los genera JS en runtime. */
 /* Capa del wallpaper del workspace (ver bentoGrid.js). Fuera de @layer
    por el mismo motivo que la scrollbar: las clases las crea JS en
    runtime y Tailwind purgaría la regla dentro de la capa. */
@@ -128,15 +131,24 @@
 }
 
 .xterm-viewport::-webkit-scrollbar,
-.bento-grid::-webkit-scrollbar {
-  width: 10px;
+.bento-grid::-webkit-scrollbar,
+.loop-stream::-webkit-scrollbar,
+.loop-composer textarea::-webkit-scrollbar,
+.loop-tiles::-webkit-scrollbar {
+  width: var(--scrollbar-w);
 }
 .xterm-viewport::-webkit-scrollbar-track,
-.bento-grid::-webkit-scrollbar-track {
+.bento-grid::-webkit-scrollbar-track,
+.loop-stream::-webkit-scrollbar-track,
+.loop-composer textarea::-webkit-scrollbar-track,
+.loop-tiles::-webkit-scrollbar-track {
   background: transparent;
 }
 .xterm-viewport::-webkit-scrollbar-thumb,
-.bento-grid::-webkit-scrollbar-thumb {
+.bento-grid::-webkit-scrollbar-thumb,
+.loop-stream::-webkit-scrollbar-thumb,
+.loop-composer textarea::-webkit-scrollbar-thumb,
+.loop-tiles::-webkit-scrollbar-thumb {
   background-color: rgb(255 255 255 / 0.22);
   border-radius: 10px;
   border: 2px solid transparent;
@@ -144,22 +156,41 @@
   min-height: 32px;
 }
 .xterm-viewport::-webkit-scrollbar-thumb:hover,
-.bento-grid::-webkit-scrollbar-thumb:hover {
+.bento-grid::-webkit-scrollbar-thumb:hover,
+.loop-stream::-webkit-scrollbar-thumb:hover,
+.loop-composer textarea::-webkit-scrollbar-thumb:hover,
+.loop-tiles::-webkit-scrollbar-thumb:hover {
   background-color: rgb(255 255 255 / 0.4);
 }
 .xterm-viewport::-webkit-scrollbar-button,
 .xterm-viewport::-webkit-scrollbar-corner,
 .bento-grid::-webkit-scrollbar-button,
-.bento-grid::-webkit-scrollbar-corner {
+.bento-grid::-webkit-scrollbar-corner,
+.loop-stream::-webkit-scrollbar-button,
+.loop-stream::-webkit-scrollbar-corner,
+.loop-composer textarea::-webkit-scrollbar-button,
+.loop-composer textarea::-webkit-scrollbar-corner,
+.loop-tiles::-webkit-scrollbar-button,
+.loop-tiles::-webkit-scrollbar-corner {
   display: none;
 }
 
-/* Tema claro: el grid tiene fondo claro; píldora negra translúcida sólo en el grid. */
-/* Se apunta al pseudo-elemento directo para no heredar a .xterm-viewport. */
-:root[data-theme='light'] .bento-grid::-webkit-scrollbar-thumb {
+/* Tema claro: el grid y el panel del loop tienen fondo claro; píldora negra translúcida.
+   Se enumeran los selectores concretos — NUNCA un descendiente genérico ni una variable
+   heredada. La vista expandida monta una terminal real dentro del panel (termSlotEl), así
+   que '#loop-sidebar ::-webkit-scrollbar-thumb' le pondría pulgar negro sobre fondo negro
+   a esa terminal. Se apunta al pseudo-elemento de cada selector, como ya se hizo con
+   .bento-grid. */
+:root[data-theme='light'] .bento-grid::-webkit-scrollbar-thumb,
+:root[data-theme='light'] .loop-stream::-webkit-scrollbar-thumb,
+:root[data-theme='light'] .loop-composer textarea::-webkit-scrollbar-thumb,
+:root[data-theme='light'] .loop-tiles::-webkit-scrollbar-thumb {
   background-color: rgb(0 0 0 / 0.22);
 }
-:root[data-theme='light'] .bento-grid::-webkit-scrollbar-thumb:hover {
+:root[data-theme='light'] .bento-grid::-webkit-scrollbar-thumb:hover,
+:root[data-theme='light'] .loop-stream::-webkit-scrollbar-thumb:hover,
+:root[data-theme='light'] .loop-composer textarea::-webkit-scrollbar-thumb:hover,
+:root[data-theme='light'] .loop-tiles::-webkit-scrollbar-thumb:hover {
   background-color: rgb(0 0 0 / 0.4);
 }
 
@@ -640,6 +671,10 @@
      regla en el bundle, así que sin el id la variable CSS gana el parse pero pierde
      la cascada — el padding nunca se aplica. */
   #loop-sidebar .loop-stream { padding-bottom: var(--loop-composer-h, 5.5rem); }
+  /* Carril reservado siempre: sin stable, cuando el hilo pasa de no desbordar a
+     desbordar aparece la barra, el contenido se angosta y las burbujas se re-wrapean.
+     id en el selector por el mismo motivo que padding-bottom. */
+  #loop-sidebar .loop-stream { scrollbar-gutter: stable; }
   /* Lateral: sale del flujo y flota al pie del panel (panelEl es position:fixed
      = contexto de posicionamiento). streamEl (flex-1) se estira hasta el fondo. */
   .loop-composer {
@@ -647,6 +682,7 @@
     left: 0; right: 0; bottom: 0;
     z-index: 2;
     pointer-events: none;
+    margin-inline-end: var(--scrollbar-w); /* libera la barra en lateral (absolute) y expandida (static) */
     /* Degradado: transparente arriba (sin línea de corte) → velo del fondo abajo
        (la franja de la leyenda). Sin desenfoque: el texto del hilo pasa por detrás
        visible y nítido, que es lo que se quiere. El 70 % de opacidad da contraste
