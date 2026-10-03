@@ -670,9 +670,11 @@
      no el de la ventana, así que @container y no media queries. */
   #loop-sidebar { container-type: inline-size; }
 
-  /* Velo de color muy suave que reemplaza la línea divisoria: separa el encabezado
-     del hilo sin dibujar una segunda raya sobre el borde del roster. */
+  /* Velo de acento + línea explícita: el velo da el tinte, la línea marca el corte.
+     border-b queda SIEMPRE al pie del header (incluido cuando se abre el buscador,
+     que vive dentro del mismo nodo y lo hace crecer). */
   .loop-header {
+    border-bottom: 1px solid var(--color-line);
     background: linear-gradient(180deg,
       color-mix(in srgb, var(--color-accent) 6%, transparent),
       transparent);
