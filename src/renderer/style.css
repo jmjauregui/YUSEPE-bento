@@ -996,9 +996,12 @@
     transition: background 0.12s, border-color 0.12s;
   }
   .loop-remote-start:hover { background: var(--color-bg-elev); border-color: rgb(var(--color-accent-rgb) / 0.5); }
-  .loop-remote { display: flex; gap: 0.6rem; align-items: flex-start; padding: 0.5rem; border-radius: 10px; background: var(--color-bg-elev); border: 1px solid var(--color-line); }
-  .loop-remote-qr { width: 112px; height: 112px; flex-shrink: 0; border-radius: 6px; background: #fff; padding: 4px; image-rendering: pixelated; }
-  .loop-remote-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.15rem; }
+  /* QR grande (224 px): a 112 había que acercar mucho el teléfono para que lo
+     leyera. A ese tamaño no entra al lado del texto en la columna (~280 px),
+     así que va arriba y centrado, con la info debajo. */
+  .loop-remote { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; padding: 0.6rem; border-radius: 10px; background: var(--color-bg-elev); border: 1px solid var(--color-line); }
+  .loop-remote-qr { width: 224px; max-width: 100%; aspect-ratio: 1; height: auto; flex-shrink: 0; border-radius: 8px; background: #fff; padding: 8px; image-rendering: pixelated; }
+  .loop-remote-info { width: 100%; min-width: 0; display: flex; flex-direction: column; gap: 0.15rem; }
   .loop-remote-device { display: flex; align-items: center; gap: 0.35rem; font-size: 10px; color: var(--color-fg-muted); }
   .loop-remote-stop { align-self: flex-start; margin-top: 0.35rem; font-size: 10.5px; padding: 0.2rem 0.55rem; border-radius: 6px; border: 1px solid var(--color-line); color: var(--color-fg-soft); }
   .loop-remote-stop:hover { border-color: rgb(239 68 68 / 0.6); color: rgb(248 113 113); }
