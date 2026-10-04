@@ -21,6 +21,7 @@ import { ProfileManager } from '../core/profileManager.js';
 import * as liveTiles from '../core/liveTiles.js';
 import { normalizeUrl } from './webviewTile.js';
 import { templateFromProfile, validateTemplate } from '../core/layoutTemplates.js';
+import { miniMap } from './terminalPicker.js';
 
 const ZOOM_STEP = 0.1;
 const ZOOM_MIN = 0.5;
@@ -119,7 +120,7 @@ export function openWorkspaceManager() {
 
     table.append(h('thead', {}, [
       h('tr', { class: 'text-left text-fg-subtle border-b border-line' }, [
-        h('th', { class: 'py-1.5 pr-2 font-medium w-40' }, 'Nombre'),
+        h('th', { class: 'py-1.5 pr-2 font-medium w-52' }, 'Nombre'),
         h('th', { class: 'py-1.5 pr-2 font-medium w-16' }, 'Tamaño'),
         h('th', { class: 'py-1.5 pr-2 font-medium' }, 'Comando / URL'),
         h('th', { class: 'py-1.5 pr-2 font-medium w-14' }, 'Barra'),
@@ -143,7 +144,13 @@ export function openWorkspaceManager() {
   function row(tile) {
     const tr = h('tr', { class: 'border-b border-line/60 align-top' });
     tr.append(
-      h('td', { class: 'py-2 pr-2 whitespace-nowrap truncate' }, labelFor(tile)),
+      // Mini-mapa del mosaico, igual que al elegir terminal para el loop:
+      // con varias "Terminal" iguales, lo único que las distingue es dónde
+      // están en pantalla.
+      h('td', { class: 'py-2 pr-2' }, h('div', { class: 'flex items-center gap-2 min-w-0' }, [
+        miniMap(tile),
+        h('span', { class: 'truncate' }, labelFor(tile)),
+      ])),
       h('td', { class: 'py-2 pr-2 whitespace-nowrap text-fg-subtle' }, `${tile.colSpan || 1}x${tile.rowSpan || 1}`),
       commandOrUrlCell(tile),
       navCell(tile),
