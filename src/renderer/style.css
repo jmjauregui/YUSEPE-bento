@@ -76,6 +76,7 @@
    sin wallpaper); bentoGrid.js lo pisa por workspace. */
 :root {
   --term-tile-opacity: 1;
+  --scrollbar-w: 10px; /* ancho compartido por la barra del loop y el margen del compositor */
 }
 
 /* Scrollbar de la terminal al estilo macOS: pill finita y translúcida,
@@ -87,7 +88,9 @@
    OJO: esto vive FUERA de @layer components a propósito. Tailwind purga
    las reglas de esa capa cuyo selector no aparece en los archivos del
    content, y `.xterm-viewport` lo crea xterm en runtime — adentro de la
-   capa, la regla desaparece del bundle en silencio. */
+   capa, la regla desaparece del bundle en silencio. Lo mismo aplica a los
+   selectores del loop que se suman al grupo: `.loop-stream`,
+   `.loop-composer textarea` y `.loop-tiles` los genera JS en runtime. */
 /* Capa del wallpaper del workspace (ver bentoGrid.js). Fuera de @layer
    por el mismo motivo que la scrollbar: las clases las crea JS en
    runtime y Tailwind purgaría la regla dentro de la capa. */
@@ -127,25 +130,68 @@
   opacity: 0;
 }
 
-.xterm-viewport::-webkit-scrollbar {
-  width: 10px;
+.xterm-viewport::-webkit-scrollbar,
+.bento-grid::-webkit-scrollbar,
+.loop-stream::-webkit-scrollbar,
+.loop-composer textarea::-webkit-scrollbar,
+.loop-tiles::-webkit-scrollbar {
+  width: var(--scrollbar-w);
 }
-.xterm-viewport::-webkit-scrollbar-track {
+.xterm-viewport::-webkit-scrollbar-track,
+.bento-grid::-webkit-scrollbar-track,
+.loop-stream::-webkit-scrollbar-track,
+.loop-composer textarea::-webkit-scrollbar-track,
+.loop-tiles::-webkit-scrollbar-track {
   background: transparent;
 }
-.xterm-viewport::-webkit-scrollbar-thumb {
+.xterm-viewport::-webkit-scrollbar-thumb,
+.bento-grid::-webkit-scrollbar-thumb,
+.loop-stream::-webkit-scrollbar-thumb,
+.loop-composer textarea::-webkit-scrollbar-thumb,
+.loop-tiles::-webkit-scrollbar-thumb {
   background-color: rgb(255 255 255 / 0.22);
   border-radius: 10px;
   border: 2px solid transparent;
   background-clip: content-box;
   min-height: 32px;
 }
-.xterm-viewport::-webkit-scrollbar-thumb:hover {
+.xterm-viewport::-webkit-scrollbar-thumb:hover,
+.bento-grid::-webkit-scrollbar-thumb:hover,
+.loop-stream::-webkit-scrollbar-thumb:hover,
+.loop-composer textarea::-webkit-scrollbar-thumb:hover,
+.loop-tiles::-webkit-scrollbar-thumb:hover {
   background-color: rgb(255 255 255 / 0.4);
 }
 .xterm-viewport::-webkit-scrollbar-button,
-.xterm-viewport::-webkit-scrollbar-corner {
+.xterm-viewport::-webkit-scrollbar-corner,
+.bento-grid::-webkit-scrollbar-button,
+.bento-grid::-webkit-scrollbar-corner,
+.loop-stream::-webkit-scrollbar-button,
+.loop-stream::-webkit-scrollbar-corner,
+.loop-composer textarea::-webkit-scrollbar-button,
+.loop-composer textarea::-webkit-scrollbar-corner,
+.loop-tiles::-webkit-scrollbar-button,
+.loop-tiles::-webkit-scrollbar-corner {
   display: none;
+}
+
+/* Tema claro: el grid y el panel del loop tienen fondo claro; píldora negra translúcida.
+   Se enumeran los selectores concretos — NUNCA un descendiente genérico ni una variable
+   heredada. La vista expandida monta una terminal real dentro del panel (termSlotEl), así
+   que '#loop-sidebar ::-webkit-scrollbar-thumb' le pondría pulgar negro sobre fondo negro
+   a esa terminal. Se apunta al pseudo-elemento de cada selector, como ya se hizo con
+   .bento-grid. */
+:root[data-theme='light'] .bento-grid::-webkit-scrollbar-thumb,
+:root[data-theme='light'] .loop-stream::-webkit-scrollbar-thumb,
+:root[data-theme='light'] .loop-composer textarea::-webkit-scrollbar-thumb,
+:root[data-theme='light'] .loop-tiles::-webkit-scrollbar-thumb {
+  background-color: rgb(0 0 0 / 0.22);
+}
+:root[data-theme='light'] .bento-grid::-webkit-scrollbar-thumb:hover,
+:root[data-theme='light'] .loop-stream::-webkit-scrollbar-thumb:hover,
+:root[data-theme='light'] .loop-composer textarea::-webkit-scrollbar-thumb:hover,
+:root[data-theme='light'] .loop-tiles::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(0 0 0 / 0.4);
 }
 
 @layer base {
@@ -162,6 +208,8 @@
     gap: 8px;
     height: 100%;
     background: var(--color-bg);
+    overflow-y: auto;
+    scrollbar-gutter: stable;
   }
 
   /* Marca de agua del logo YUSEPE Bento: al ser position:absolute no es un
@@ -335,18 +383,31 @@
      que es el borde "interior" del panel. Ver utils/resizableSidebar.js. */
   .sidebar-resize-handle {
     position: absolute;
-    top: 0;
-    bottom: 0;
-    width: 6px;
     z-index: 5;
-    cursor: col-resize;
-    /* Línea de accent que aparece al hover/arrastrar, pegada al borde. */
     background: transparent;
     transition: background 0.12s;
   }
+  /* Bordes verticales (eje x) */
+  .sidebar-resize-handle[data-edge='right'],
+  .sidebar-resize-handle[data-edge='left'] {
+    top: 0; bottom: 0;
+    width: 6px;
+    cursor: col-resize;
+  }
   .sidebar-resize-handle[data-edge='right'] { right: 0; }
-  .sidebar-resize-handle[data-edge='left'] { left: 0; }
+  .sidebar-resize-handle[data-edge='left']  { left: 0; }
 
+  /* Bordes horizontales (eje y) */
+  .sidebar-resize-handle[data-edge='top'],
+  .sidebar-resize-handle[data-edge='bottom'] {
+    left: 0; right: 0;
+    height: 6px;
+    cursor: row-resize;
+  }
+  .sidebar-resize-handle[data-edge='top']    { top: 0; }
+  .sidebar-resize-handle[data-edge='bottom'] { bottom: 0; }
+
+  /* Línea de accent al hover/arrastrar, pegada al borde interior del panel. */
   .sidebar-resize-handle[data-edge='right']:hover,
   body.resizing-sidebar .sidebar-resize-handle[data-edge='right'] {
     background: linear-gradient(to right, transparent, rgb(var(--color-accent-rgb) / 0.5));
@@ -355,14 +416,21 @@
   body.resizing-sidebar .sidebar-resize-handle[data-edge='left'] {
     background: linear-gradient(to left, transparent, rgb(var(--color-accent-rgb) / 0.5));
   }
+  .sidebar-resize-handle[data-edge='bottom']:hover,
+  body.resizing-sidebar .sidebar-resize-handle[data-edge='bottom'] {
+    background: linear-gradient(to bottom, transparent, rgb(var(--color-accent-rgb) / 0.5));
+  }
+  .sidebar-resize-handle[data-edge='top']:hover,
+  body.resizing-sidebar .sidebar-resize-handle[data-edge='top'] {
+    background: linear-gradient(to top, transparent, rgb(var(--color-accent-rgb) / 0.5));
+  }
 
-  /* Mientras se arrastra: cursor global + sin selección + los webviews
-     dejan de capturar el puntero (si no, el drag se "pega" al pasar sobre
-     un tile de webview, igual que en el drag de tiles). */
+  /* Mientras se arrastra: sin selección + webviews dejan de capturar el puntero. */
   body.resizing-sidebar {
-    cursor: col-resize;
     user-select: none;
   }
+  body.resizing-sidebar-x { cursor: col-resize; }
+  body.resizing-sidebar-y { cursor: row-resize; }
   body.resizing-sidebar webview {
     pointer-events: none;
   }
@@ -466,21 +534,26 @@
   #loop-sidebar.is-expanded {
     display: grid;
     left: 0;
-    width: auto !important; /* pisa el ancho guardado del panel lateral */
-    border-left: none;
+    right: 0;
+    top: 3rem;           /* = top-12; bajo la topbar, igual en los 4 bordes */
+    bottom: 0;
+    width: auto !important;  /* pisa el ancho guardado (eje x) */
+    height: auto !important; /* pisa el alto guardado (eje y — panel arriba/abajo) */
+    border: none;        /* neutraliza border-left/right/top/bottom según posición */
     grid-template-columns: var(--loop-left-w, 280px) minmax(0, 1fr) var(--loop-right-w, 380px);
-    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    grid-template-rows: auto auto minmax(0, 1fr);
     grid-template-areas:
       "header header   header"
       "roster stream   right"
-      "left   stream   right"
-      "left   composer right";
+      "left   stream   right";
   }
   #loop-sidebar.is-expanded .loop-header   { grid-area: header; }
   #loop-sidebar.is-expanded .loop-roster   { grid-area: roster; border-right: 1px solid var(--color-line); }
   #loop-sidebar.is-expanded .loop-stream,
   #loop-sidebar.is-expanded .loop-empty    { grid-area: stream; }
-  #loop-sidebar.is-expanded .loop-composer { grid-area: composer; }
+  /* Expandida: comparte la celda del hilo; position:static deshace el
+     absolute de la vista lateral (sin él taparía las columnas laterales). */
+  #loop-sidebar.is-expanded .loop-composer { grid-area: stream; align-self: end; position: static; }
   #loop-sidebar.is-expanded .loop-left {
     grid-area: left;
     display: flex;
@@ -503,7 +576,7 @@
     transition: background 0.12s;
   }
   #loop-sidebar.is-expanded .loop-splitter[data-axis='col'] {
-    grid-row: 2 / 5;
+    grid-row: 2 / 4;
     width: 7px;
     cursor: col-resize;
   }
@@ -592,6 +665,93 @@
     border-color: rgb(var(--color-accent-rgb) / 0.45);
     box-shadow: 0 1px 2px rgb(0 0 0 / 0.12), 0 6px 24px rgb(0 0 0 / 0.16);
   }
+
+  /* ---- Encabezado del loop (047) ---- */
+  /* container-type: el ancho que manda es el del panel (lo arrastra el usuario),
+     no el de la ventana, así que @container y no media queries. */
+  #loop-sidebar { container-type: inline-size; }
+
+  /* Velo de acento + línea explícita: el velo da el tinte, la línea marca el corte.
+     border-b queda SIEMPRE al pie del header (incluido cuando se abre el buscador,
+     que vive dentro del mismo nodo y lo hace crecer). */
+  .loop-header {
+    border-bottom: 1px solid var(--color-line);
+    background: linear-gradient(180deg,
+      color-mix(in srgb, var(--color-accent) 6%, transparent),
+      transparent);
+  }
+
+  /* Pastilla del título: fondo y borde de acento tenues vía color-mix, sirve en
+     los dos temas sin reglas adicionales. shrink-0 + nowrap: el criterio 1 (el
+     título nunca se parte, nunca se encoge). */
+  #loop-sidebar .loop-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.2rem 0.5rem;
+    font-size: 0.72rem;
+    font-weight: 600;
+    white-space: nowrap;
+    flex-shrink: 0;
+    background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-accent) 32%, transparent);
+    border-radius: 999px;
+    color: var(--color-fg);
+  }
+  /* Ícono del loop dentro de la pastilla: mezclado hacia --color-fg para que no
+     quede flojo en tema claro (mismo recurso que el nombre del agente en el hilo). */
+  #loop-sidebar .loop-title svg {
+    color: color-mix(in srgb, var(--color-accent) 75%, var(--color-fg));
+  }
+
+  /* Orden de sacrificio con @container — qué cede cuando no entra, y en qué orden.
+     L1: "Todo leído" pierde su etiqueta; L2: "Expandir" pierde su etiqueta;
+     L3: el hueco se reduce a cero; L4: la pastilla pierde su ícono.
+     NINGÚN BOTÓN desaparece en ningún ancho: display:none sólo en el <span> del texto,
+     nunca en el botón, así el aria-label y el ícono siguen siendo accesibles. */
+  @container (max-width: 400px) {
+    .loop-markread-label { display: none; }
+  }
+  @container (max-width: 350px) {
+    .loop-expand-label { display: none; }
+  }
+  @container (max-width: 310px) {
+    .loop-spacer { flex: 0; min-width: 0; }
+    .loop-title-icon { display: none; }
+  }
+
+  /* ---- Compositor flotante (045) ---- */
+  /* El hilo recibe padding inferior dinámico; el fallback cubre el compositor vacío.
+     id en el selector: Tailwind genera .py-2 (misma especificidad) después de esta
+     regla en el bundle, así que sin el id la variable CSS gana el parse pero pierde
+     la cascada — el padding nunca se aplica. */
+  #loop-sidebar .loop-stream { padding-bottom: var(--loop-composer-h, 5.5rem); }
+  /* Carril reservado siempre: sin stable, cuando el hilo pasa de no desbordar a
+     desbordar aparece la barra, el contenido se angosta y las burbujas se re-wrapean.
+     id en el selector por el mismo motivo que padding-bottom. */
+  #loop-sidebar .loop-stream { scrollbar-gutter: stable; }
+  /* Lateral: sale del flujo y flota al pie del panel (panelEl es position:fixed
+     = contexto de posicionamiento). streamEl (flex-1) se estira hasta el fondo. */
+  .loop-composer {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    z-index: 2;
+    pointer-events: none;
+    margin-inline-end: var(--scrollbar-w); /* libera la barra en lateral (absolute) y expandida (static) */
+    /* Degradado: transparente arriba (sin línea de corte) → velo del fondo abajo
+       (la franja de la leyenda). Sin desenfoque: el texto del hilo pasa por detrás
+       visible y nítido, que es lo que se quiere. El 70 % de opacidad da contraste
+       suficiente para leer el "Enter envía…" sin necesitar blur. */
+    background: linear-gradient(
+      to bottom,
+      transparent 0%,
+      color-mix(in srgb, var(--color-bg-soft) 70%, transparent) 35%
+    );
+  }
+  /* La caja de escritura y la barra de herramientas reciben eventos;
+     el envoltorio no, para que la rueda del mouse scrollee el hilo. */
+  .loop-composer .loop-input { pointer-events: auto; }
+
   .loop-send {
     width: 30px;
     height: 30px;
@@ -1067,6 +1227,79 @@
   .tile-handle-br:hover {
     background: rgb(var(--color-accent-rgb) / 0.32);
     border-top-left-radius: 4px;
+  }
+
+  /* Left edge (starts below the move grip) */
+  .tile-handle-l {
+    position: absolute;
+    left: 0;
+    top: 28px;
+    bottom: 16px;
+    width: 5px;
+    z-index: 20;
+    cursor: ew-resize;
+  }
+  .tile-handle-l:hover {
+    background: rgb(var(--color-accent-rgb) / 0.28);
+  }
+
+  /* Top edge (starts to the right of the move grip) */
+  .tile-handle-t {
+    position: absolute;
+    top: 0;
+    left: 28px;
+    right: 16px;
+    height: 5px;
+    z-index: 20;
+    cursor: ns-resize;
+  }
+  .tile-handle-t:hover {
+    background: rgb(var(--color-accent-rgb) / 0.28);
+  }
+
+  /* Top-left corner: 8×8 over the move grip */
+  .tile-handle-tl {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 8px;
+    height: 8px;
+    z-index: 22;
+    cursor: nwse-resize;
+  }
+  .tile-handle-tl:hover {
+    background: rgb(var(--color-accent-rgb) / 0.32);
+    border-bottom-right-radius: 4px;
+  }
+
+  /* Top-right corner */
+  .tile-handle-tr {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 16px;
+    height: 16px;
+    z-index: 21;
+    cursor: nesw-resize;
+  }
+  .tile-handle-tr:hover {
+    background: rgb(var(--color-accent-rgb) / 0.32);
+    border-bottom-left-radius: 4px;
+  }
+
+  /* Bottom-left corner */
+  .tile-handle-bl {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 16px;
+    height: 16px;
+    z-index: 21;
+    cursor: nesw-resize;
+  }
+  .tile-handle-bl:hover {
+    background: rgb(var(--color-accent-rgb) / 0.32);
+    border-top-right-radius: 4px;
   }
 
   /* ---- Preview de Markdown (tile Explorador) ---- */

@@ -49,3 +49,18 @@ export function workingFor(sinceIso, now = Date.now()) {
   const min = Math.floor(ms / 60_000);
   return min < 60 ? `${min} min` : `${Math.floor(min / 60)} h ${min % 60} min`;
 }
+
+/**
+ * Línea a mostrar en el panel de "pensando" para un agente.
+ * - rojo (titilando o no) → kind 'phrase': la frase rotatoria del agente
+ * - ámbar → kind 'problem': el diagnóstico del dot, sin frase (decisión 044-B)
+ * - verde / gris → null (el agente no aparece en el panel)
+ *
+ * @param {{ dot: {color: string, blink: boolean, label: string}, phrase: string, elapsed: string }} opts
+ * @returns {{ kind: 'phrase'|'problem', color: string, text: string } | null}
+ */
+export function thinkingLine({ dot, phrase }) {
+  if (dot.color === 'red') return { kind: 'phrase', color: 'red', text: phrase };
+  if (dot.color === 'amber') return { kind: 'problem', color: 'amber', text: dot.label };
+  return null;
+}

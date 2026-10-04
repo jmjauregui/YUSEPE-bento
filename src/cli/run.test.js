@@ -120,6 +120,21 @@ describe('ayuda y errores de uso', () => {
     expect(err).toContain('--as');
     expect(err).toContain('YBENTO_AGENT');
   });
+
+  it('--as bento falla con mensaje que dice qué hacer', async () => {
+    let err = '';
+    const code = await run(['estado', '--as', 'bento'], {
+      cwd, env: {}, out: () => {}, err: (t) => { err += t; },
+    });
+    expect(code).toBe(1);
+    expect(err).toMatch(/reservado/);
+  });
+
+  it('enviar @bento falla con mensaje que dice qué hacer', async () => {
+    const { code, err } = await cli(['enviar', '@bento', 'hola']);
+    expect(code).toBe(1);
+    expect(err).toMatch(/reservado/);
+  });
 });
 
 describe('estado', () => {

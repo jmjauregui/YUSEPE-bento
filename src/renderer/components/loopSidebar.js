@@ -26,34 +26,36 @@ import { h } from '../utils/dom.js';
 import { svgIcon } from '../utils/icons.js';
 import { state } from '../core/state.js';
 import { bus } from '../core/eventBus.js';
+import { applyAgentOrder, pressOutcome, insertionIndex, trackPress, crossingMoves, shouldReorder, HOLD_MS, SLOP_PX } from '../core/agentOrder.js';
+import { isAbsent, rowFlags, rosterAlert, createRosterAccordion, observerOptionsSignature } from '../core/rosterAccordion.js';
+import { createOrderLoader } from '../core/orderLoader.js';
 import { openModal, closeModal, confirmModal } from './modal.js';
 import { ProfileManager } from '../core/profileManager.js';
 import * as liveTiles from '../core/liveTiles.js';
 import { focusTileById } from './bentoGrid.js';
 import { pickTerminal } from './terminalPicker.js';
 import { labelFor } from './workspaceManager.js';
-import { thinkingPhrase, workingFor } from '../core/loopThinking.js';
+import { thinkingPhrase, workingFor, thinkingLine } from '../core/loopThinking.js';
 import { openTerminalPeek } from './terminalPeek.js';
 import { cancelRecording, currentLevel, currentModel, startRecording, stopAndTranscribe } from '../core/dictation.js';
 import { insertAtCursor } from '../core/dictationText.js';
 import QRCode from 'qrcode';
 import { renderMarkdown } from '../core/markdown.js';
 import {
-  badgeLabel, cursorAtEnd, ensureCursor, saveCursor, unreadSummary,
+  badgeLabel, cursorAtEnd, ensureCursor, saveCursor, unreadSummary, unreadTitle,
 } from '../core/loopUnread.js';
 import { applySavedWidth, makeResizeHandle } from '../utils/resizableSidebar.js';
+import { getPanelPosition, panelLayout, expandClip, ALL_POSITION_CLASSES } from '../core/panelPosition.js';
 import { toast } from './toast.js';
 import { notifyUserMessage } from '../core/loopNotify.js';
+import { createCopyFeedback } from '../core/copyFeedback.js';
+import { pushObserverThreshold } from '../core/observerSettings.js';
+import { activityState } from '../core/loopActivity.js';
+import { agentDotState } from '../core/agentDot.js';
+import { matchMessages, highlightInPlace, initialNavIndex, moveNavIndex, navLabel } from '../core/loopSearch.js';
+import { composerPad, isAtBottom } from '../core/loopScroll.js';
 
-const WIDTH_OPTS = {
-  storageKey: 'yusepe:loop-width',
-  // El panel está pegado al borde derecho, así que su borde "interior" —
-  // por donde se agarra para agrandarlo — es el izquierdo.
-  edge: 'left',
-  min: 300,
-  max: 900,
-  defaultWidth: 384,
-};
+let resizeHandleEl = null;
 
 /**
  * A partir de acá un mensaje se colapsa. Los reportes de QA entre agentes
@@ -405,8 +407,12 @@ let thinkingTick = 0;
 let thinkingAgents = [];
 
 let rosterEl = null;
+let rosterBtnEl = null;
+let lastRosterAlert = null;
+let accordion = null;
 let streamEl = null;
 let composerEl = null;
+let composerRO = null;   // ResizeObserver sobre composerEl (045)
 let emptyEl = null;
 let isOpen = false;
 
@@ -426,6 +432,46 @@ let composerNoAgentsEl = null;
  * Ids en el orden del DOM y firma de colores para detectar cuándo reconstruir. */
 let renderedIds = [];
 let renderedSig = null;
+
+/* Nodo persistente del selector de designado (036, corrección del desplegable) */
+let rosterListEl = null;         // sub-div que renderRoster vacía y rehace
+let observerSelectEl = null;     // <select> que nunca se destruye
+let observerSig = null;          // última firma con la que se dibujaron las opciones
+let pendingObserverUpdate = null; // { sig, agents } esperando a que el select pierda el foco
+
+/* Estado y nodos del buscador en el hilo (039) */
+let searchState = null;  // null | { query, all, results, activeIndex }
+let searchBarEl = null;
+let searchInputEl = null;
+let searchCountEl = null;
+let searchLupaBtn = null;
+let navPrevBtn = null;   // ‹ hacia el más nuevo
+let navNextBtn = null;   // › hacia el más viejo
+// Forzar scroll al fondo en el próximo renderStream, incluso si atBottom era false.
+// Se prende cuando la búsqueda se cierra (con panel visible u oculto).
+let forceBottomNextRender = false;
+
+/* Indicador de actividad por agente (037 v2) */
+let currentPresence = {};
+const streaks = new Map();       // streakStartedAt por nombre: se limpia al cambiar de workspace
+let blinkOn = false;             // fase global del titileo
+let blinkTimer = null;           // único setInterval para todos los puntos
+const blinkingDots = new Set();  // nodos <span> que están titilando ahora
+
+/* Orden de las pills guardado por el usuario.
+ * Se carga al entrar al workspace (una sola lectura de disco, no en cada poll). */
+let agentOrder = { cwd: null, names: [] };
+
+/* Agente designado para recibir avisos del observador en este workspace. */
+let observerAgent = null;
+
+/* Arrastre activo: no-null sólo mientras el usuario sostiene una pill. */
+let dragState = null;
+
+/* Estado pendiente: pointerdown en curso, antes de que venza el timer de HOLD_MS.
+ * renderPills lo respeta igual que dragState para no destruir la pill bajo el dedo.
+ * Todas las salidas del gesto pasan por endDrag, que lo limpia con pressState.abort(). */
+let pressState = null;
 
 /* ---------- Modo del loop: un loop a la vez vs. simultáneos ---------- */
 
@@ -495,16 +541,45 @@ let lastNotifiedAt = 0;
 let unread = { count: 0, forUser: false, ids: new Set() };
 let lastMessages = [];
 let markReadBtn = null;
+let unreadPillEl = null;
 
 const cwd = () => state.profile?.cwd || null;
+
+function orderFor(c) {
+  return agentOrder.cwd === c ? agentOrder.names : [];
+}
+
+const loadOrder = createOrderLoader({
+  getCwd: cwd,
+  fetchOrder: (c) => window.yusepe.loop.getOrder(c),
+  onLoaded: ({ cwd: c, names }) => { agentOrder = { cwd: c, names }; },
+});
 
 export function initLoopSidebar() {
   panelEl = document.getElementById('loop-sidebar');
   if (!panelEl) return;
 
-  applySavedWidth(panelEl, WIDTH_OPTS);
   buildChrome();
   initRemote();
+  applyPanelPosition(getPanelPosition());
+
+  // Ctrl+F: abrir buscador del loop salvo que el foco esté en una terminal.
+  document.addEventListener('keydown', (e) => {
+    if (e.key.toLowerCase() !== 'f' || !e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) return;
+    if (document.activeElement?.closest('[data-kind="terminal"]')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (!isOpen) openSidebar();
+    openSearch();
+  }, true);
+
+  // Escape y pérdida de foco terminan cualquier arrastre activo.
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && (dragState || pressState)) { e.preventDefault(); endDrag(false); }
+  });
+  window.addEventListener('blur', () => { if (dragState || pressState) endDrag(false); });
+
+  bus.on('loop:position-changed', (pos) => applyPanelPosition(pos));
 
   // El repartidor vive en main y vigila el disco: se arranca al entrar a un
   // workspace y se corta al salir, tenga o no el panel abierto — el loop
@@ -516,8 +591,28 @@ export function initLoopSidebar() {
     renderedSig = null;
     // No notificar mensajes que ya existían al abrir el workspace.
     lastNotifiedAt = Date.now();
+    // Cargar el orden guardado para este workspace (una lectura de disco).
+    loadOrder();
+    // Cerrar búsqueda al cambiar workspace: la consulta no tiene sentido en otro hilo.
+    searchState = null;
+    if (searchBarEl) searchBarEl.classList.add('hidden');
+    if (searchInputEl) searchInputEl.value = '';
+    // Resetear rachas y reloj: el nuevo workspace arranca con estado limpio.
+    currentPresence = {};
+    streaks.clear();
+    stopBlinkClock();
+    // Resetear el designado; se carga async al entrar al workspace.
+    observerAgent = null;
     applyUnread(null);
-    if (cwd()) { window.yusepe.loop.start(cwd()); updateUnread(); }
+    if (cwd()) {
+      window.yusepe.loop.getObserverAgent(cwd()).then((name) => {
+        observerAgent = name;
+        if (isOpen) refresh();
+      }).catch(() => {});
+      pushObserverThreshold();
+      window.yusepe.loop.start(cwd());
+      updateUnread();
+    }
     // Restaurar el estado abierto/cerrado guardado para este workspace.
     if (savedOpenState(state.profile?.id)) openSidebar({ animate: false });
     else closeSidebar();
@@ -529,8 +624,12 @@ export function initLoopSidebar() {
     // Las piezas de la columna derecha son de este workspace: se sueltan
     // (la terminal sigue viva, ver unmountRight).
     unmountRight();
+    // Si hay un arrastre (o presión pendiente) en curso, terminarlo antes de cambiar.
+    if (dragState || pressState) endDrag(false);
     // Guardar el estado actual antes de salir, para restaurarlo al volver.
     persistOpenState(state.profile?.id, isOpen);
+    // Parar el reloj: los puntos del workspace que dejamos no titilan en background.
+    stopBlinkClock();
     // En modo "un loop a la vez", detener el dispatcher de este workspace.
     // En modo "loops simultáneos", dejarlo corriendo para que los agentes
     // de este workspace sigan recibiendo mensajes aunque no estemos acá.
@@ -615,6 +714,14 @@ function paintUnreadBadge() {
   badge.classList.toggle('hidden', !unread.count);
   // Acento si alguno es para vos; neutro si son sólo charlas entre agentes.
   badge.classList.toggle('is-user', unread.forUser);
+
+  // Contador de la pastilla: misma variable, un solo cálculo.
+  if (unreadPillEl) {
+    const label = badgeLabel(unread.count);
+    unreadPillEl.textContent = label;
+    unreadPillEl.classList.toggle('hidden', !label);
+    unreadPillEl.setAttribute('aria-label', unreadTitle(unread.count));
+  }
 }
 
 /**
@@ -636,7 +743,7 @@ function paintUnreadStream() {
 function paintMarkReadBtn() {
   if (!markReadBtn) return;
   markReadBtn.disabled = !unread.count;
-  markReadBtn.lastChild.textContent = unread.count ? `Marcar leído (${badgeLabel(unread.count)})` : 'Todo leído';
+  // El contador de no leídos viaja en la pastilla del título (047), no aquí.
 }
 
 export function isLoopSidebarOpen() {
@@ -663,7 +770,11 @@ function openSidebar({ animate = true } = {}) {
   // Preferencia de Configuración: abrir directo en la vista expandida.
   // Al restaurar un workspace no se anima (no fue un gesto del usuario).
   if (getLoopOpenView() === 'expanded' && !isExpanded) setExpanded(true, { animate });
-  refresh();
+  accordion?.open();
+  if (composerRO && composerEl) composerRO.observe(composerEl);
+  // Recargar el orden al abrir el panel (cubre el caso de que el workspace
+  // estuviera cargado pero el panel cerrado cuando se guardó el orden).
+  loadOrder().then(() => refresh());
 }
 
 function closeSidebar() {
@@ -672,10 +783,82 @@ function closeSidebar() {
   renderThinking([], {});
   // Cerrar el panel corta una grabación en curso: el micrófono no queda abierto.
   cancelRecording();
+  if (dragState || pressState) endDrag(false);
+  accordion?.close();
   isOpen = false;
   document.getElementById('btn-toggle-loop')?.classList.remove('is-active');
   persistOpenState(state.profile?.id, false);
   panelEl.classList.add('hidden');
+  // Cerrar búsqueda: el panel estuvo cerrado y no tiene sentido dejarla abierta.
+  if (searchState) {
+    searchState = null;
+    renderedIds = [];
+    renderedSig = null;
+    forceBottomNextRender = true;
+  }
+  if (searchBarEl) searchBarEl.classList.add('hidden');
+  if (searchInputEl) searchInputEl.value = '';
+  // Parar el reloj del titileo: nada titila con el panel cerrado.
+  stopBlinkClock();
+  composerRO?.disconnect();
+}
+
+/* ---------- Posición del panel (038) ---------- */
+
+/**
+ * Cambia la posición del panel sin destruir ni reconstruir el Chrome.
+ * Solo se reemplaza el handle de redimensionado, que depende del borde.
+ */
+function applyPanelPosition(pos) {
+  if (!panelEl) return;
+  const layout = panelLayout(pos, window.innerHeight);
+
+  // Quitar todas las clases de posicionamiento posibles y poner las nuevas.
+  panelEl.classList.remove(...ALL_POSITION_CLASSES);
+  panelEl.classList.add(...layout.classes.split(' '));
+
+  // Limpiar el tamaño del eje opuesto: si era horizontal, height queda suelta;
+  // si era vertical, width queda suelto. Sin esto el panel quedaría mal dimensionado.
+  if (layout.axis === 'y') {
+    panelEl.style.width = '';
+  } else {
+    panelEl.style.height = '';
+  }
+
+  // Aplicar el tamaño guardado para el eje activo.
+  applySavedWidth(panelEl, {
+    storageKey: layout.storageKey,
+    min: layout.min,
+    max: layout.max,
+    defaultWidth: layout.defaultSize,
+    axis: layout.axis,
+  });
+
+  // Expandido: sin asa. Al contraer se recrea en el borde que corresponde.
+  if (isExpanded) {
+    if (resizeHandleEl && resizeHandleEl.parentNode) {
+      resizeHandleEl.parentNode.removeChild(resizeHandleEl);
+    }
+    resizeHandleEl = null;
+    return;
+  }
+
+  // Reemplazar SÓLO el nodo del handle — el resto del chrome no se toca.
+  const newHandle = makeResizeHandle({
+    panel: panelEl,
+    storageKey: layout.storageKey,
+    edge: layout.handleEdge,
+    min: layout.min,
+    max: layout.max,
+    defaultWidth: layout.defaultSize,
+    axis: layout.axis,
+  });
+  if (resizeHandleEl && resizeHandleEl.parentNode) {
+    resizeHandleEl.parentNode.replaceChild(newHandle, resizeHandleEl);
+  } else {
+    panelEl.append(newHandle);
+  }
+  resizeHandleEl = newHandle;
 }
 
 /* ---------- "Está pensando…" ---------- */
@@ -689,9 +872,27 @@ function closeSidebar() {
  * Va en el compositor y no en el hilo: el render incremental del hilo
  * (023) cuenta un nodo por mensaje.
  */
+// thinkingAgents: [{ agent, dotState }] — decisión 044-B, agentDotState en vez de state === 'working'
 function renderThinking(agents, presence) {
   if (!thinkingEl) return;
-  thinkingAgents = agents.filter((a) => a.state === 'working' && presence[a.name]?.present !== false);
+  const now = Date.now();
+  thinkingAgents = agents.map((a) => {
+    const pres = presence[a.name];
+    const actResult = activityState({
+      now,
+      lastDataAtByAgent: { [a.name]: pres?.lastDataAt },
+      streakStartedAt: streaks.get(a.name) ?? null,
+    });
+    const dotState = agentDotState({
+      activity: actResult ?? { state: 'idle', streakStartedAt: null, sinceMs: 0 },
+      absent: isAbsent(pres),
+      working: a.state === 'working',
+      stuckMs: now - new Date(a.updatedAt).getTime(),
+    });
+    if (dotState.color !== 'red' && dotState.color !== 'amber') return null;
+    return { agent: a, dotState };
+  }).filter(Boolean);
+
   if (!thinkingAgents.length) {
     thinkingEl.classList.add('hidden');
     thinkingEl.replaceChildren();
@@ -706,20 +907,34 @@ function renderThinking(agents, presence) {
 }
 
 function paintThinking() {
-  thinkingEl.replaceChildren(...thinkingAgents.map((agent) => {
+  thinkingEl.replaceChildren(...thinkingAgents.map(({ agent, dotState }) => {
     const tint = colorOf(agent);
     const elapsed = workingFor(agent.updatedAt);
+    const line = thinkingLine({ dot: dotState, phrase: thinkingPhrase(agent.name, thinkingTick) });
+    if (!line) return null;
+
+    if (line.kind === 'problem') {
+      return h('div', { class: 'loop-thinking-row' }, [
+        h('span', { class: 'loop-thinking-icon' }, agent.emoji || '●'),
+        h('span', {
+          class: 'font-medium',
+          style: `color: color-mix(in srgb, ${tint} 75%, var(--color-fg))`,
+        }, `@${agent.name}`),
+        h('span', { class: 'text-amber-400/80 ml-1' }, ` — ${line.text}`),
+      ]);
+    }
+
     return h('div', { class: 'loop-thinking-row' }, [
       h('span', { class: 'loop-thinking-icon' }, agent.emoji || '●'),
       h('span', {
         class: 'font-medium',
         style: `color: color-mix(in srgb, ${tint} 75%, var(--color-fg))`,
       }, `@${agent.name}`),
-      h('span', {}, ` está ${thinkingPhrase(agent.name, thinkingTick)}`),
+      h('span', {}, ` está ${line.text}`),
       h('span', { class: 'loop-dots', 'aria-hidden': 'true' }, [h('i'), h('i'), h('i')]),
       ...(elapsed ? [h('span', { class: 'text-fg-subtle/70 ml-1' }, `· ${elapsed}`)] : []),
     ]);
-  }));
+  }).filter(Boolean));
 }
 
 /* ---------- Vista expandida (spec 037) ---------- */
@@ -831,21 +1046,37 @@ function setExpanded(on, { animate = true } = {}) {
   expandBtn.lastChild.textContent = on ? 'Contraer' : 'Expandir';
   expandBtn.title = on ? 'Volver al panel lateral' : 'Ver el loop a pantalla completa, con tareas y una terminal';
 
+  // Decisión C: expandir/contraer cierra la búsqueda por el camino de cierre de la 039.
+  if (searchState) {
+    searchState = null;
+    renderedIds = [];
+    renderedSig = null;
+    refresh();
+  }
+
+  const pos = getPanelPosition();
+  const layout = panelLayout(pos, window.innerHeight);
+  const storedSize = parseInt(
+    typeof localStorage !== 'undefined' ? (localStorage.getItem(layout.storageKey) || '') : '',
+    10,
+  );
+  const size = Number.isFinite(storedSize) && storedSize > 0 ? storedSize : layout.defaultSize;
+  const available = layout.axis === 'x' ? window.innerWidth : (window.innerHeight - 48); // 48 = topbar
+
   const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
   const canAnimate = animate && !reduce && !panelEl.classList.contains('hidden') && panelEl.animate;
-  const sideLeft = () => Math.max(0, window.innerWidth - (parseInt(panelEl.style.width, 10) || WIDTH_OPTS.defaultWidth));
   const opts = { duration: 160, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' };
   const followLast = () => queueMicrotask(() => { streamEl.scrollTop = streamEl.scrollHeight; });
 
   if (on) {
-    const from = sideLeft();
     panelEl.classList.add('is-expanded');
+    applyPanelPosition(pos); // elimina el asa (isExpanded ya es true)
     mountRight();
     renderTilesList();
     followLast();
     if (canAnimate) {
-      expandAnim = panelEl.animate(
-        [{ clipPath: `inset(0 0 0 ${from}px)` }, { clipPath: 'inset(0 0 0 0)' }], opts);
+      const { from, to } = expandClip(pos, { available, size });
+      expandAnim = panelEl.animate([{ clipPath: from }, { clipPath: to }], opts);
       expandAnim.onfinish = () => { expandAnim = null; };
     }
     return;
@@ -854,13 +1085,15 @@ function setExpanded(on, { animate = true } = {}) {
   const finish = () => {
     expandAnim = null;
     panelEl.classList.remove('is-expanded');
+    applyPanelPosition(pos); // recrea el asa en el borde de la posición vigente
     unmountRight();
     followLast();
   };
   if (!canAnimate) { finish(); return; }
   panelEl.classList.add('is-collapsing');
+  const { from: collapseTo } = expandClip(pos, { available, size });
   expandAnim = panelEl.animate(
-    [{ clipPath: 'inset(0 0 0 0)' }, { clipPath: `inset(0 0 0 ${sideLeft()}px)` }],
+    [{ clipPath: 'inset(0 0 0 0)' }, { clipPath: collapseTo }],
     { ...opts, duration: 130, easing: 'cubic-bezier(0.4, 0, 1, 1)' });
   expandAnim.onfinish = () => { panelEl.classList.remove('is-collapsing'); finish(); };
   expandAnim.oncancel = () => panelEl.classList.remove('is-collapsing');
@@ -937,30 +1170,57 @@ function unmountRight() {
 /* ---------- Estructura ---------- */
 
 function buildChrome() {
+  composerRO?.disconnect();
+  composerRO = null;
   panelEl.innerHTML = '';
   // Resetear estado persistente: el DOM fue destruido, hay que recrearlo.
   currentAgents = []; composerBoxEl = null; pillsContainerEl = null;
   composerInput = null; composerSendBtn = null; composerNoAgentsEl = null;
   renderedIds = []; renderedSig = null;
+  rosterListEl = null; observerSelectEl = null; observerSig = null; pendingObserverUpdate = null;
+  searchState = null; searchBarEl = null; searchInputEl = null; searchCountEl = null; searchLupaBtn = null; navPrevBtn = null; navNextBtn = null; forceBottomNextRender = false;
+  unreadPillEl = null;
+  currentPresence = {};
+  streaks.clear();
+  stopBlinkClock();
 
-  const title = h('div', { class: 'text-xs text-fg-soft flex-1 flex items-center gap-1.5' }, [
-    h('span', { class: 'text-accent-soft flex items-center' }, svgIcon('loop', { size: 14 })),
+  unreadPillEl = h('span', { class: 'hidden tabular-nums text-[10px]' });
+  const title = h('span', { class: 'loop-title shrink-0 whitespace-nowrap flex items-center gap-1' }, [
+    h('span', { class: 'loop-title-icon flex items-center' }, svgIcon('loop', { size: 14 })),
     h('span', {}, 'Loop de agentes'),
+    unreadPillEl,
   ]);
+
+  rosterBtnEl = h('button', {
+    class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg px-1 shrink-0',
+    'aria-expanded': 'true',
+    'aria-label': 'Agentes del loop',
+    title: 'Agentes del loop',
+    onClick: () => accordion?.toggle(),
+  }, svgIcon('agents', { size: 14 }));
+
+  searchLupaBtn = h('button', {
+    class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg px-1 shrink-0',
+    'aria-label': 'Buscar en el hilo',
+    title: 'Buscar en el hilo (Ctrl+F)',
+    onClick: openSearch,
+  }, svgIcon('search', { size: 14 }));
 
   markReadBtn = h('button', {
     class: 'inline-flex items-center gap-1 text-[10px] text-fg-muted hover:text-fg px-1.5 py-0.5 rounded shrink-0 '
       + 'disabled:opacity-40 disabled:hover:text-fg-muted',
+    'aria-label': 'Todo leído',
     title: 'Marcar todo como leído',
     onClick: markAllRead,
-  }, [svgIcon('check', { size: 12 }), h('span', {}, 'Todo leído')]);
+  }, [svgIcon('check', { size: 12 }), h('span', { class: 'loop-markread-label' }, 'Todo leído')]);
 
   expandBtn = h('button', {
     class: 'inline-flex items-center gap-1 text-[10px] text-fg-muted hover:text-fg px-1.5 py-0.5 rounded shrink-0 '
       + 'border border-line hover:bg-bg-elev transition',
+    'aria-label': 'Expandir loop',
     title: 'Ver el loop a pantalla completa, con tareas y una terminal',
     onClick: () => setExpanded(!isExpanded),
-  }, [svgIcon('external', { size: 11 }), h('span', {}, 'Expandir')]);
+  }, [svgIcon('external', { size: 11 }), h('span', { class: 'loop-expand-label' }, 'Expandir')]);
 
   // En el panel lateral no hay columna izquierda: el QR va en un modal.
   const phoneBtn = h('button', {
@@ -969,25 +1229,128 @@ function buildChrome() {
     onClick: () => openModal({ title: 'Loop en el teléfono', body: remoteBlock(), size: 'sm' }),
   }, svgIcon('phone', { size: 14 }));
 
-  const header = h('div', { class: 'loop-header flex items-center gap-1.5 px-2 py-1.5 border-b border-line shrink-0' }, [
-    title,
+  const skillBtn = h('button', {
+    class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg px-1 shrink-0',
+    'aria-label': 'Protocolo del loop',
+    title: 'Protocolo que leen los agentes (.ybento/loop/skill.md)',
+    onClick: openSkillEditor,
+  }, svgIcon('file', { size: 14 }));
+
+  const hueco = h('span', { class: 'flex-1 loop-spacer' });
+
+  const iconRow = h('div', { class: 'flex items-center gap-1.5 px-2 py-1.5' }, [
     expandBtn,
+    rosterBtnEl,
+    searchLupaBtn,
+    skillBtn,
     phoneBtn,
+    hueco,
     markReadBtn,
+    title,
     h('button', {
       class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg px-1 shrink-0',
-      title: 'Protocolo que leen los agentes (.ybento/loop/skill.md)',
-      onClick: openSkillEditor,
-    }, svgIcon('file', { size: 14 })),
-    h('button', {
-      class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg px-1 shrink-0',
+      'aria-label': 'Cerrar loop de agentes',
       title: 'Cerrar loop de agentes',
       onClick: closeSidebar,
     }, svgIcon('close', { size: 15 })),
   ]);
 
-  rosterEl = h('div', { class: 'loop-roster shrink-0 border-b border-line px-1.5 py-1.5' });
+  searchInputEl = h('input', {
+    type: 'text',
+    placeholder: 'Buscar en el hilo…',
+    class: 'flex-1 min-w-0 text-xs bg-transparent outline-none text-fg placeholder:text-fg-subtle',
+  });
+  searchCountEl = h('span', { class: 'text-[10px] text-fg-subtle shrink-0 tabular-nums' });
+  navPrevBtn = h('button', {
+    class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg disabled:opacity-30 disabled:cursor-not-allowed px-0.5 shrink-0',
+    title: 'Resultado anterior (Shift+Enter)',
+    onClick: () => moveNav('prev'),
+  }, '‹');
+  navNextBtn = h('button', {
+    class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg disabled:opacity-30 disabled:cursor-not-allowed px-0.5 shrink-0',
+    title: 'Resultado siguiente (Enter)',
+    onClick: () => moveNav('next'),
+  }, '›');
+  navPrevBtn.disabled = true;
+  navNextBtn.disabled = true;
+  searchBarEl = h('div', { class: 'hidden flex items-center gap-1.5 px-2 pb-1.5' });
+  searchBarEl.append(
+    searchInputEl,
+    navPrevBtn,
+    searchCountEl,
+    navNextBtn,
+    h('button', {
+      class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg px-1 shrink-0',
+      title: 'Cerrar búsqueda (Esc)',
+      onClick: closeSearch,
+    }, svgIcon('close', { size: 12 })),
+  );
+  searchInputEl.addEventListener('input', onSearchInput);
+  searchInputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { closeSearch(); return; }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      e.shiftKey ? moveNav('prev') : moveNav('next');
+    }
+  });
+
+  const header = h('div', { class: 'loop-header shrink-0' }, [iconRow, searchBarEl]);
+
+  rosterEl = h('div', {
+    id: 'loop-roster',
+    class: 'loop-roster shrink-0 border-b border-line px-1.5 py-1.5',
+  });
+  rosterBtnEl.setAttribute('aria-controls', 'loop-roster');
+
+  // Sub-nodos persistentes: rosterListEl se vacía en cada poll, observerSelectEl no.
+  rosterListEl = h('div', {});
+  observerSelectEl = h('select', {
+    class: 'mt-2 w-full text-[11px] px-2 py-1 rounded-md border border-line bg-bg text-fg-soft cursor-pointer hidden',
+  });
+  observerSelectEl.addEventListener('change', () => {
+    const name = observerSelectEl.value || null;
+    observerAgent = name;
+    // Actualizar la firma para que el próximo poll no rehaga las opciones innecesariamente.
+    observerSig = observerOptionsSignature(
+      Array.from(observerSelectEl.options).slice(1).map((o) => ({ name: o.value })),
+      name,
+    );
+    window.yusepe.loop.setObserverAgent(cwd(), name).catch((err) => {
+      toast.error(`No se pudo guardar el agente designado: ${err?.message ?? String(err)}`);
+    });
+    refresh();
+  });
+  observerSelectEl.addEventListener('blur', () => {
+    if (pendingObserverUpdate) {
+      const { sig, agents } = pendingObserverUpdate;
+      applyObserverOptions(agents, sig);
+    }
+  });
+  // Avisos del protocolo viejo y del hook (038), arriba de la lista de agentes.
   noticesEl = h('div', { class: 'hidden space-y-1 mb-1.5' });
+  rosterEl.append(noticesEl, rosterListEl, observerSelectEl);
+
+  // El roster nunca se cierra por un evento — sólo al vencer la cuenta con
+  // isHeld() false. mouseleave y focusout sólo rearman a 5 s (release).
+  rosterEl.addEventListener('mouseleave', () => accordion?.release());
+  rosterEl.addEventListener('focusout', (e) => {
+    if (!rosterEl.contains(e.relatedTarget)) accordion?.release();
+  });
+
+  accordion = createRosterAccordion({
+    isHeld: () => rosterEl.matches(':hover') || rosterEl.contains(document.activeElement),
+    onChange: (open) => {
+      if (open) {
+        rosterEl.classList.remove('hidden');
+      } else {
+        rosterEl.classList.add('hidden');
+      }
+      rosterBtnEl.setAttribute('aria-expanded', String(open));
+      // Actualizar el punto inmediatamente al cambiar estado, sin esperar el poll.
+      applyAlertDot(lastRosterAlert, open);
+    },
+  });
+
   streamEl = h('div', { class: 'loop-stream flex-1 overflow-y-auto px-2 py-2 space-y-2' });
   emptyEl = h('div', { class: 'loop-empty hidden px-3 py-6 text-center text-[11px] text-fg-subtle leading-relaxed' });
   composerEl = h('div', { class: 'loop-composer shrink-0 px-2.5 pt-1 pb-2.5' });
@@ -995,7 +1358,7 @@ function buildChrome() {
   composerEl.append(thinkingEl);
 
   // Sólo en la vista expandida (el CSS los oculta en el panel lateral).
-  tilesListEl = h('div', { class: 'flex-1 overflow-y-auto space-y-0.5' });
+  tilesListEl = h('div', { class: 'flex-1 overflow-y-auto space-y-0.5 loop-tiles' });
   const leftEl = h('div', { class: 'loop-left flex-col min-h-0 px-2 py-2' }, [
     h('div', { class: 'loop-col-title' }, 'Terminales y documentos'),
     tilesListEl,
@@ -1017,11 +1380,21 @@ function buildChrome() {
   );
   for (const name of Object.keys(SPLITS)) writeSplit(name, readSplit(name));
 
-  panelEl.append(
-    header, rosterEl, streamEl, emptyEl, composerEl, leftEl, rightEl, leftHandle, rightHandle,
-    makeResizeHandle({ panel: panelEl, ...WIDTH_OPTS }),
-  );
+  resizeHandleEl = null; // applyPanelPosition lo recreará
+  panelEl.append(header, rosterEl, streamEl, emptyEl, composerEl, leftEl, rightEl, leftHandle, rightHandle);
   panelEl.classList.add('flex', 'flex-col');
+
+  // ResizeObserver sobre composerEl (045): publica --loop-composer-h y, si
+  // el usuario estaba al fondo, lo mantiene ahí cuando el compositor crece.
+  // wasAtBottom se mide ANTES de escribir la variable: el padding nuevo
+  // mueve el fondo y la medición posterior sería siempre "no estaba al fondo".
+  composerRO = new ResizeObserver(() => {
+    const wasAtBottom = isAtBottom(streamEl);
+    const pad = composerPad(composerEl.offsetHeight, { streamH: streamEl.clientHeight });
+    panelEl.style.setProperty('--loop-composer-h', `${pad}px`);
+    if (wasAtBottom) streamEl.scrollTop = streamEl.scrollHeight;
+  });
+  composerRO.observe(composerEl);
 }
 
 async function refresh() {
@@ -1032,11 +1405,13 @@ async function refresh() {
       window.yusepe.loop.messages(cwd(), { limit: 200 }),
       window.yusepe.loop.presence(cwd()),
     ]);
-    renderRoster(agents, presence || {}, messages);
-    renderStream(messages, agents);
+    const ordered = applyAgentOrder(agents, orderFor(cwd()));
+    currentPresence = presence || {};
+    renderRoster(ordered, currentPresence, messages);
+    renderStream(messages, ordered);
     renderThinking(agents, presence || {});
     applyUnread(messages);
-    renderComposer(agents);
+    renderComposer(ordered);
   } catch (err) {
     streamEl.innerHTML = '';
     // Sincronizar el estado con el DOM que acabamos de vaciar.
@@ -1046,35 +1421,177 @@ async function refresh() {
   }
 }
 
-/* ---------- Roster de terminales ---------- */
+/* ---------- Reloj de titileo compartido (037 v2) ---------- */
+
+function stopBlinkClock() {
+  if (blinkTimer) { clearInterval(blinkTimer); blinkTimer = null; }
+  blinkingDots.clear();
+}
+
+function startBlinkClock() {
+  if (blinkTimer) return;
+  blinkTimer = setInterval(() => {
+    blinkOn = !blinkOn;
+    for (const el of blinkingDots) {
+      if (!el.isConnected) { blinkingDots.delete(el); continue; }
+      el.style.opacity = blinkOn ? '1' : '0.2';
+    }
+    if (blinkingDots.size === 0) stopBlinkClock();
+  }, 500);
+}
 
 /**
- * Verde = libre, ámbar = ocupado, rojo = su terminal volvió al prompt.
- *
- * El rojo es el caso que más importa: significa que el proceso del agente
- * terminó, así que no se le entrega nada y sus mensajes quedan pendientes.
- * Sin este aviso, el loop se ve normal mientras nadie contesta.
+ * Crea el <span> del punto de estado para un agente.
+ * Los puntos con blink: true se registran en blinkingDots y arrancan el reloj.
  */
-function stateDot(agent, presence) {
-  if (presence && presence.present === false) {
-    return h('span', {
-      class: 'w-1.5 h-1.5 rounded-full shrink-0 bg-red-400',
-      title: `Su terminal volvió al prompt (${presence.foreground}): el agente ya no está corriendo. `
-        + 'Los mensajes le quedan pendientes hasta que lo vuelvas a levantar.',
-    });
+function makeAgentDot(dotState) {
+  const bgColor = {
+    green: 'bg-emerald-400',
+    red:   'bg-red-400',
+    amber: 'bg-amber-400',
+    gray:  'bg-slate-400/50',
+  }[dotState.color] ?? 'bg-slate-400/50';
+
+  const el = h('span', {
+    class: `w-1.5 h-1.5 rounded-full shrink-0 ${bgColor}`,
+    title: dotState.label,
+    'aria-label': dotState.label,
+  });
+
+  if (dotState.blink) {
+    el.style.opacity = blinkOn ? '1' : '0.2';
+    blinkingDots.add(el);
+    startBlinkClock();
   }
-  const working = agent.state === 'working';
-  return h('span', {
-    class: `w-1.5 h-1.5 rounded-full shrink-0 ${working ? 'bg-amber-400' : 'bg-emerald-400'}`,
-    title: working
-      ? 'Ocupado: los mensajes le quedan en la bandeja hasta que se libere'
-      : 'Libre: recibe mensajes en su terminal',
+  return el;
+}
+
+/* ---------- Buscador en el hilo (039) ---------- */
+
+function openSearch() {
+  if (!searchBarEl) return;
+  searchBarEl.classList.remove('hidden');
+  searchInputEl?.focus();
+  if (searchState) return;
+  // Mostrar "buscando…" mientras se carga el hilo completo.
+  if (searchCountEl) searchCountEl.textContent = 'buscando…';
+  const c = cwd();
+  if (!c) return;
+  window.yusepe.loop.messages(c, { limit: 0 }).then((all) => {
+    // Tomar lo que haya tipeado el usuario mientras llegaba el hilo.
+    const query = searchInputEl?.value ?? '';
+    searchState = { query, all, results: matchMessages(all, query) };
+    renderSearchResults();
+  }).catch(() => {
+    if (searchCountEl) searchCountEl.textContent = '';
   });
 }
 
+function closeSearch() {
+  searchState = null;
+  if (searchBarEl) searchBarEl.classList.add('hidden');
+  if (searchInputEl) searchInputEl.value = '';
+  if (searchCountEl) searchCountEl.textContent = '';
+  // Reset del render incremental: al volver al hilo normal, la 023 reconstruye.
+  renderedIds = [];
+  renderedSig = null;
+  forceBottomNextRender = true;
+  refresh();
+}
+
+function onSearchInput() {
+  if (!searchState || !searchInputEl) return;
+  const query = searchInputEl.value;
+  if (query === searchState.query) return;
+  searchState = { ...searchState, query, results: matchMessages(searchState.all, query) };
+  renderSearchResults();
+}
+
+function renderSearchResults() {
+  if (!searchState || !streamEl) return;
+  const { query, results } = searchState;
+  const colors = Object.fromEntries((currentAgents || []).map((a) => [a.name, colorOf(a)]));
+
+  streamEl.innerHTML = '';
+  renderedIds = [];
+  renderedSig = null;
+
+  if (!results.length) {
+    searchState.activeIndex = -1;
+    updateNavButtons();
+    emptyEl.classList.remove('hidden');
+    emptyEl.textContent = query
+      ? `Sin resultados para "${query}".`
+      : 'Sin mensajes todavía.';
+    if (searchCountEl) searchCountEl.textContent = query ? '0 resultados' : '';
+    return;
+  }
+
+  emptyEl.classList.add('hidden');
+  for (const msg of results) {
+    // Los mensajes largos que coinciden se muestran desplegados.
+    if ((msg.text?.length ?? 0) > LONG_MESSAGE_CHARS && !expanded.has(msg.id)) {
+      expanded.add(msg.id);
+    }
+    streamEl.append(messageRow(msg, colors, query));
+  }
+
+  // Índice activo: el más reciente (abajo). El contador muestra la posición.
+  const activeIndex = initialNavIndex(results);
+  searchState.activeIndex = activeIndex;
+  updateNavButtons();
+  if (searchCountEl) {
+    searchCountEl.textContent = query ? navLabel(activeIndex, results.length) : '';
+  }
+  // Aplicar anillo al activo y hacer scroll hasta él.
+  queueMicrotask(() => applyNavActive(-1, activeIndex, results.length));
+}
+
+function updateNavButtons() {
+  if (!navPrevBtn || !navNextBtn) return;
+  const { activeIndex = -1, results = [] } = searchState ?? {};
+  const len = results.length;
+  // La función pura es la única fuente de la regla: si mover no cambia el índice, el extremo fue alcanzado.
+  navPrevBtn.disabled = moveNavIndex(activeIndex, len, 'prev') === activeIndex;
+  navNextBtn.disabled = moveNavIndex(activeIndex, len, 'next') === activeIndex;
+}
+
+/**
+ * Toca SÓLO dos burbujas: quita el anillo del índice viejo y lo pone en el nuevo.
+ * Pasa `oldIndex = -1` para saltar la limpieza (por ejemplo al init).
+ */
+function applyNavActive(oldIndex, newIndex, len) {
+  if (!streamEl) return;
+  if (oldIndex >= 0 && oldIndex < len) {
+    const oldRow = streamEl.children[oldIndex];
+    if (oldRow) oldRow.querySelector('.group')?.style.setProperty('outline', '');
+  }
+  if (newIndex >= 0 && newIndex < len) {
+    const newRow = streamEl.children[newIndex];
+    if (newRow) {
+      const bubble = newRow.querySelector('.group');
+      if (bubble) bubble.style.setProperty('outline', '2px solid var(--color-accent)');
+      newRow.scrollIntoView({ block: 'center' });
+    }
+  }
+}
+
+function moveNav(dir) {
+  if (!searchState || searchState.results.length === 0) return;
+  const { activeIndex, results } = searchState;
+  const newIndex = moveNavIndex(activeIndex, results.length, dir);
+  if (newIndex === activeIndex) return; // en el extremo, ya está clavado
+  applyNavActive(activeIndex, newIndex, results.length);
+  searchState.activeIndex = newIndex;
+  updateNavButtons();
+  if (searchCountEl) searchCountEl.textContent = navLabel(newIndex, results.length);
+}
+
+/* ---------- Roster de terminales ---------- */
+
 /** Hace cuánto que no cambia de estado, en texto corto. */
-function sinceLabel(iso) {
-  const ms = Date.now() - new Date(iso).getTime();
+function sinceLabel(iso, now) {
+  const ms = now - new Date(iso).getTime();
   if (!Number.isFinite(ms) || ms < 0) return '';
   const min = Math.floor(ms / 60000);
   if (min < 1) return 'recién';
@@ -1083,18 +1600,70 @@ function sinceLabel(iso) {
 }
 
 /**
- * A partir de acá, un agente en `working` probablemente se colgó o murió a
- * mitad de la tarea. No se toca solo — se avisa y se ofrece liberarlo,
- * porque un agente que de verdad está trabajando duro no debería perder su
- * turno por un umbral arbitrario.
+ * Pinta o borra el punto de alerta en el botón del acordeón.
+ * Un solo color (ámbar): el rojo está reservado para "ocupado" en los puntos
+ * por agente. El texto dice qué pasa y a cuántos agentes afecta.
  */
-const STUCK_WORKING_MS = 15 * 60 * 1000;
+function applyAlertDot(alert, rosterOpen) {
+  if (!rosterBtnEl) return;
+  const existing = rosterBtnEl.querySelector('[data-alert-dot]');
+  if (existing) existing.remove();
+  if (!alert || rosterOpen) return;
+
+  let tip;
+  if (alert.kind === 'both') {
+    tip = `${alert.down} ${alert.down === 1 ? 'agente caído' : 'agentes caídos'} y `
+        + `${alert.stuck} ${alert.stuck === 1 ? 'trabado' : 'trabados'}`;
+  } else if (alert.kind === 'down') {
+    tip = `${alert.count} ${alert.count === 1 ? 'agente caído' : 'agentes caídos'}`;
+  } else {
+    tip = `${alert.count} ${alert.count === 1 ? 'agente trabado' : 'agentes trabados'}`;
+  }
+
+  const dot = h('span', {
+    'data-alert-dot': '',
+    class: 'absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-amber-400',
+    title: tip,
+  });
+  rosterBtnEl.style.position = 'relative';
+  rosterBtnEl.append(dot);
+}
+
+/** Rehace las <option> del selector persistente y actualiza la firma. */
+function applyObserverOptions(agents, sig) {
+  observerSig = sig;
+  pendingObserverUpdate = null;
+  while (observerSelectEl.firstChild) observerSelectEl.removeChild(observerSelectEl.firstChild);
+  const optNone = h('option', { value: '' }, 'Avisos a: ninguno');
+  optNone.selected = !observerAgent;
+  observerSelectEl.append(optNone);
+  for (const a of agents) {
+    const opt = h('option', { value: a.name }, `Avisos a: @${a.name}`);
+    if (a.name === observerAgent) opt.selected = true;
+    observerSelectEl.append(opt);
+  }
+  if (agents.length > 0) observerSelectEl.classList.remove('hidden');
+  else observerSelectEl.classList.add('hidden');
+}
+
+/** Actualiza el selector sólo cuando la firma cambia; aplaza si el select tiene foco. */
+function updateObserverSelect(agents) {
+  if (!observerSelectEl) return;
+  const sig = observerOptionsSignature(agents, observerAgent);
+  if (sig === observerSig) return;
+  if (observerSelectEl === document.activeElement) {
+    pendingObserverUpdate = { sig, agents };
+    return;
+  }
+  applyObserverOptions(agents, sig);
+}
 
 function renderRoster(agents, presence = {}, messages = []) {
-  rosterEl.innerHTML = '';
-  if (noticesEl) rosterEl.append(noticesEl);
+  // Un solo `now` para filas y punto — C5: "exactamente el mismo".
+  const now = Date.now();
+  rosterListEl.innerHTML = '';
 
-  // Qué espera cada agente del usuario: decisión abierta o permiso pendiente.
+  // Qué espera cada agente del usuario: decisión abierta o permiso pendiente (038).
   const dismissed = dismissedPermissions();
   const waitingOn = {};
   for (const m of messages) {
@@ -1103,37 +1672,79 @@ function renderRoster(agents, presence = {}, messages = []) {
   }
 
   if (!agents.length) {
-    rosterEl.append(h('p', { class: 'text-[10px] text-fg-subtle px-1.5 py-1 leading-relaxed' },
+    rosterListEl.append(h('p', { class: 'text-[10px] text-fg-subtle px-1.5 py-1 leading-relaxed' },
       'Ninguna terminal está en el loop todavía.'));
   }
 
-  for (const agent of agents) rosterEl.append(agentRow(agent, presence[agent.name], waitingOn[agent.name]));
+  for (const agent of agents) {
+    const pres = presence[agent.name];
+    const actResult = activityState({
+      now,
+      lastDataAtByAgent: { [agent.name]: pres?.lastDataAt },
+      streakStartedAt: streaks.get(agent.name) ?? null,
+    });
+    streaks.set(agent.name, actResult.streakStartedAt);
+    rosterListEl.append(agentRow(agent, pres, now, actResult, waitingOn[agent.name]));
+  }
 
-  rosterEl.append(h('button', {
+  rosterListEl.append(h('button', {
     class: 'w-full mt-1 text-[11px] px-2 py-1.5 rounded-md border border-line hover:bg-bg-elev transition text-fg-muted',
     onClick: openAddAgent,
   }, '+ Sumar una terminal al loop'));
+
+  // Actualizar el selector persistente sólo si la firma cambió (y sin cerrarlo).
+  updateObserverSelect(agents);
+
+  // Actualizar el punto del botón del acordeón — flujo de datos, nunca toca
+  // el controlador (criterio 4 de la spec).
+  if (rosterBtnEl) {
+    const alert = rosterAlert(agents, presence, now);
+    lastRosterAlert = alert;
+
+    let label = 'Agentes del loop';
+    if (alert) {
+      if (alert.kind === 'both') {
+        label += ` — ${alert.down} ${alert.down === 1 ? 'caído' : 'caídos'} y ${alert.stuck} trabado${alert.stuck !== 1 ? 's' : ''}`;
+      } else if (alert.kind === 'down') {
+        label += ` — ${alert.count} ${alert.count === 1 ? 'agente caído' : 'agentes caídos'}`;
+      } else {
+        label += ` — ${alert.count} ${alert.count === 1 ? 'agente trabado' : 'agentes trabados'}`;
+      }
+    }
+    // Sólo reescribir si cambió — evita pelea con tooltip.js, que roba el
+    // `title` en el hover y no lo devuelve hasta que el puntero salga.
+    if (rosterBtnEl.getAttribute('aria-label') !== label) {
+      rosterBtnEl.setAttribute('aria-label', label);
+      rosterBtnEl.setAttribute('title', label);
+    }
+    applyAlertDot(alert, accordion?.isOpen);
+  }
 }
 
-function agentRow(agent, presence, waitingOn = null) {
+function agentRow(agent, presence, now, actResult, waitingOn = null) {
   const tile = (state.profile?.tiles || []).find((t) => t.id === agent.tileId);
-  const absent = presence?.present === false;
-  const stuck = agent.state === 'working'
-    && Date.now() - new Date(agent.updatedAt).getTime() > STUCK_WORKING_MS;
+  const { subtitle: problem, showRelease: stuck } = rowFlags(agent, presence, now);
+  const stuckMs = now - new Date(agent.updatedAt).getTime();
+  const dotState = agentDotState({
+    activity: actResult ?? { state: 'idle', streakStartedAt: null, sinceMs: 0 },
+    absent: isAbsent(presence),
+    working: agent.state === 'working',
+    stuckMs,
+  });
 
   // Segunda línea: normalmente el rol, pero si algo anda mal eso pasa a ser
   // lo importante — un rol prolijo no sirve de nada si el agente está caído.
   let subtitle;
-  if (absent) {
+  if (problem === 'absent') {
     subtitle = h('div', { class: 'text-[10px] text-red-400/90 truncate' },
       `terminal en el prompt (${presence.foreground}) — no recibe`);
   } else if (waitingOn === 'permission') {
     subtitle = h('div', { class: 'text-[10px] text-amber-400/90 truncate' }, '🔐 pide permiso en su terminal');
   } else if (waitingOn === 'question') {
     subtitle = h('div', { class: 'text-[10px] text-accent-soft truncate' }, '❓ esperando tu decisión');
-  } else if (stuck) {
+  } else if (problem === 'stuck') {
     subtitle = h('div', { class: 'text-[10px] text-amber-400/90 truncate' },
-      `ocupado ${sinceLabel(agent.updatedAt)} — ¿se colgó?`);
+      `ocupado ${sinceLabel(agent.updatedAt, now)} — ¿se colgó?`);
   } else if (agent.role) {
     subtitle = h('div', { class: 'text-[10px] text-fg-subtle truncate' }, agent.role);
   } else {
@@ -1155,12 +1766,20 @@ function agentRow(agent, presence, waitingOn = null) {
     ].filter(Boolean).join('\n\n'),
     onClick: () => { if (tile) focusTileById(tile.id); },
   }, [
-    stateDot(agent, presence),
+    makeAgentDot(dotState),
     h('div', { class: 'flex-1 min-w-0' }, [
       h('div', {
-        class: 'text-xs truncate font-medium',
+        class: 'text-xs truncate font-medium flex items-center gap-0.5',
         style: `color: color-mix(in srgb, ${tint} 75%, var(--color-fg))`,
-      }, `${agent.emoji ? `${agent.emoji} ` : ''}@${agent.name}`),
+      }, [
+        `${agent.emoji ? `${agent.emoji} ` : ''}@${agent.name}`,
+        ...(agent.name === observerAgent
+          ? [h('span', {
+            class: 'ml-0.5 text-[9px] text-fg-subtle shrink-0',
+            title: 'Agente designado para avisos del observador',
+          }, '◉')]
+          : []),
+      ]),
       subtitle,
     ]),
     h('div', { class: 'hidden group-hover:flex gap-0.5 shrink-0' }, [
@@ -1210,8 +1829,16 @@ function rebuildStream(messages, colors, sig) {
 }
 
 function renderStream(messages, agents) {
+  // En modo búsqueda el hilo está congelado: no tocarlo hasta cerrar.
+  if (searchState) return;
+
+  // Consumir la bandera de una sola vez: fuerza scroll al fondo sí o sí,
+  // sin depender de atBottom (funciona incluso con el panel recién revelado).
+  const forceBottom = forceBottomNextRender;
+  if (forceBottom) forceBottomNextRender = false;
+
   // Calcular ANTES de tocar el DOM: innerHTML='' recorta scrollTop a 0.
-  const atBottom = streamEl.scrollHeight - streamEl.scrollTop - streamEl.clientHeight < 40;
+  const atBottom = forceBottom || isAtBottom(streamEl);
 
   if (!messages.length) {
     // Vacío explícito: sin esto los nodos persistentes quedan como fantasmas.
@@ -1306,7 +1933,7 @@ function renderStream(messages, agents) {
   if (atBottom) queueMicrotask(() => { streamEl.scrollTop = streamEl.scrollHeight; });
 }
 
-function messageRow(msg, colors = {}) {
+function messageRow(msg, colors = {}, query = '') {
   const mine = msg.from === 'usuario';
   const forMe = msg.to === 'usuario';
 
@@ -1317,8 +1944,12 @@ function messageRow(msg, colors = {}) {
   // Los agentes escriben en Markdown. Pasa por el renderizador seguro de la
   // app (el texto de un agente no puede volverse código): `breaks` porque
   // sus reportes van línea por línea, y sin imágenes en el hilo.
+  // El buscador aplica DESPUÉS, recorriendo nodos de texto con highlightInPlace
+  // (nunca construyendo HTML: si lo hiciera el texto de un agente volvería a
+  // ser código y rompería la garantía de renderMarkdown).
   const body = h('div', { class: 'loop-msg prose-bento text-xs text-fg break-words select-text cursor-text' });
   body.innerHTML = renderMarkdown(msg.text, { breaks: true, images: false });
+  if (query) highlightInPlace(body, query);
 
   // El nombre del emisor va en su color; el resto del encabezado queda
   // apagado. Así el color aparece dos veces (borde y nombre) y se aprende
@@ -1336,6 +1967,7 @@ function messageRow(msg, colors = {}) {
       forMe ? ' → vos' : ` → @${msg.to}`]
       : who),
     h('span', { class: 'text-fg-subtle/60 shrink-0' }, formatTime(msg.createdAt)),
+    copyButton(msg),
   ]);
 
   const parts = [header, body];
@@ -1350,7 +1982,7 @@ function messageRow(msg, colors = {}) {
   // en tema claro y oscuro.
   const bubble = h('div', {
     class: [
-      'loop-bubble max-w-[85%] rounded-lg px-2.5 py-1.5 border',
+      'group loop-bubble max-w-[85%] rounded-lg px-2.5 py-1.5 border',
       mine
         ? 'bg-accent/15 border-accent/30'
         : (forMe ? 'bg-bg-elev border-accent/20' : 'bg-bg-elev border-line'),
@@ -1407,6 +2039,32 @@ function collapseToggle(msg, body) {
   return button;
 }
 
+function copyButton(msg) {
+  const feedback = createCopyFeedback({
+    onState(state) {
+      const icon = state === 'done' ? 'check' : state === 'failed' ? 'warning' : 'copy';
+      const label = state === 'done' ? 'Copiado' : state === 'failed' ? 'No se pudo copiar' : 'Copiar mensaje';
+      btn.title = label;
+      btn.setAttribute('aria-label', label);
+      btn.replaceChildren(svgIcon(icon));
+      if (state === 'failed') toast.error('No se pudo copiar el mensaje');
+    },
+  });
+
+  const btn = h('button', {
+    class: 'ml-auto inline-flex items-center justify-center w-5 h-5 rounded text-fg-subtle hover:text-fg transition opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 select-none',
+    'aria-label': 'Copiar mensaje',
+    title: 'Copiar mensaje',
+  }, [svgIcon('copy')]);
+
+  btn.addEventListener('mousedown', e => e.preventDefault());
+  btn.addEventListener('click', () => {
+    feedback.run(() => window.yusepe.clipboard.writeText(msg.text));
+  });
+
+  return btn;
+}
+
 function formatTime(iso) {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return '';
@@ -1455,11 +2113,8 @@ function ensureComposerBox() {
     composerInput.value = '';
     composerInput._reset?.();
     try {
-      // seenUpTo: el último mensaje que había en pantalla al escribir — es
-      // el "hasta dónde leí" del humano (ver loopOps.postMessage).
-      await window.yusepe.loop.post(cwd(), {
-        from: 'usuario', to, text, seenUpTo: lastMessages[lastMessages.length - 1]?.id || null,
-      });
+      // seenUpTo: último id renderizado al escribir — es el "hasta dónde leí" del humano.
+      await window.yusepe.loop.post(cwd(), { from: 'usuario', to, text, seenUpTo: renderedIds.at(-1) ?? null });
       target = to;
       await refresh();
     } catch (err) {
@@ -1692,20 +2347,120 @@ function ensureComposerBox() {
 }
 
 /**
+ * Termina el arrastre activo (o la presión pendiente). Es la ÚNICA función que
+ * pone dragState = null y pressState = null.
+ *
+ * Todas las salidas del gesto pasan por acá:
+ *   pointerup (con y sin cambio), pointercancel, lostpointercapture,
+ *   Escape, blur de ventana, cierre del panel, cambio de workspace.
+ *
+ * `commit = true`  → leer el DOM y guardar si el orden cambió.
+ * `commit = false` → descartar (el DOM se reconstruye con el orden anterior).
+ */
+async function endDrag(commit) {
+  if (!dragState && !pressState) return;
+
+  // Cancelar el timer y limpiar el estado pendiente si existe.
+  if (pressState) { pressState.abort(); pressState = null; }
+
+  if (!dragState) {
+    // No repintar: si el gesto fue un tap, el click que llega después lo repinta.
+    // Si fue cancel/Escape/blur, el poll repinta en ≤1,5 s como mucho.
+    // (Repintar aquí hace innerHTML='' dentro del pointerup y destruye la pill
+    // antes de que Chromium despache el click — H16.)
+    return;
+  }
+
+  const { pillEl, preOrderNames } = dragState;
+  dragState = null;
+
+  // Quitar el estado visual de "levantada".
+  pillEl.style.transform = '';
+  pillEl.style.boxShadow = '';
+  pillEl.style.cursor = '';
+  pillEl.style.zIndex = '';
+  pillEl.style.position = '';
+
+  if (commit && pillsContainerEl && cwd()) {
+    const domNames = Array.from(pillsContainerEl.children)
+      .map((el) => el.dataset.agent);
+
+    // applyAgentOrder garantiza que agentes llegados durante el drag queden
+    // al final y que agentes que se fueron no aparezcan.
+    const newOrdered = applyAgentOrder(currentAgents, domNames);
+    const newNames = newOrdered.map((a) => a.name);
+
+    // Lo que se mostraba antes del drag (mismo cálculo que refresh usó).
+    const prevNames = applyAgentOrder(currentAgents, preOrderNames).map((a) => a.name);
+
+    if (newNames.join(',') !== prevNames.join(',')) {
+      agentOrder = { cwd: cwd(), names: newNames };
+      try {
+        await window.yusepe.loop.setOrder(cwd(), newNames);
+      } catch {
+        toast.error('No se pudo guardar el orden de las pills — al reiniciar volverá el orden anterior');
+      }
+      refresh(); // actualiza el roster con el nuevo orden
+    }
+  }
+
+  // currentAgents = lista más reciente (puede incluir un agente sumado durante
+  // el drag si dirty se marcó).
+  renderPills(currentAgents);
+}
+
+/**
  * Repinta sólo las pills y actualiza placeholder y etiqueta del botón.
  * El textarea no se toca: el caret, el borrador y el historial sobreviven.
+ *
+ * currentAgents SE ASIGNA ANTES DEL CORTE para que send() siempre tenga
+ * la lista al día aunque el repintado quede suspendido por un drag.
  */
 function renderPills(agents) {
-  currentAgents = agents;
+  currentAgents = agents; // SIEMPRE primero: send() lo necesita al día
 
   // Re-targetear si el destino ya no está en el loop.
   if (!agents.some((a) => a.name === target)) target = agents[0]?.name || null;
 
+  // H13: actualizar placeholder y botón aunque el DOM quede suspendido, para
+  // que "Enviar a @x" refleje siempre el destinatario actual.
+  if (composerInput) composerInput.placeholder = `Mensaje para @${target}…  (Enter envía)`;
+  if (composerSendBtn) {
+    const span = composerSendBtn.querySelector('span');
+    if (span) span.textContent = `Enviar a @${target}`;
+  }
+
+  // Durante un arrastre (o presión pendiente) el DOM pertenece al gesto;
+  // marcar dirty para repintar cuando termine.
+  if (dragState || pressState) { if (dragState) dragState.dirty = true; return; }
+
+  if (!pillsContainerEl) return;
+
+  // Lee streaks.get() pero NO escribe: renderRoster() escribe la racha en cada vuelta y
+  // siempre corre antes (ver refresh()). Si algún día se saltea renderRoster con el roster
+  // cerrado, los puntos leerían null y titilarian para siempre — en ese caso extraer un
+  // helper computeStreak(agent, pres, now) que lea y escriba, y usarlo en ambos sitios.
   pillsContainerEl.innerHTML = '';
+  const now = Date.now();
   for (const agent of agents) {
-    pillsContainerEl.append(h('button', {
+    const pres = currentPresence[agent.name];
+    const actResult = activityState({
+      now,
+      lastDataAtByAgent: { [agent.name]: pres?.lastDataAt },
+      streakStartedAt: streaks.get(agent.name) ?? null,
+    });
+    const stuckMs = now - new Date(agent.updatedAt).getTime();
+    const dotState = agentDotState({
+      activity: actResult,
+      absent: isAbsent(pres),
+      working: agent.state === 'working',
+      stuckMs,
+    });
+    const dot = makeAgentDot(dotState);
+
+    const pill = h('button', {
       class: [
-        'text-[10px] px-1.5 py-0.5 rounded-full border transition',
+        'inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full border transition select-none',
         agent.name === target
           ? 'bg-accent/20 border-accent/40 text-fg'
           : 'border-line hover:bg-bg-elev',
@@ -1714,20 +2469,138 @@ function renderPills(agents) {
         ? null
         : `color: color-mix(in srgb, ${colorOf(agent)} 75%, var(--color-fg))`,
       title: clampRole(agent.role) || `Escribirle a @${agent.name}`,
-      onClick: () => {
-        target = agent.name;
-        // currentAgents, no agents: puede haber llegado un agente nuevo entre
-        // el render de estas pills y el momento del click.
-        renderPills(currentAgents);
-        composerInput?.focus();
-      },
-    }, `@${agent.name}`));
-  }
+      'aria-label': `@${agent.name} — ${dotState.label}`,
+    });
+    pill.dataset.agent = agent.name;
+    pill.append(dot, `@${agent.name}`);
 
-  if (composerInput) {
-    composerInput.placeholder = `Mensaje para @${target}…`;
+    attachPillGesture(pill, agent);
+    pillsContainerEl.append(pill);
   }
-  if (composerSendBtn) composerSendBtn.title = `Enviar a @${target} (Enter)`;
+}
+
+/**
+ * Adjunta el gesto de puntero a una pill.
+ *
+ * Tres resultados posibles:
+ *   'tap'    → pointerdown + pointerup sin moverse ni llegar al segundo
+ *   'cancel' → se movió más de SLOP_PX antes del segundo
+ *   'lift'   → aguantó el segundo → drag
+ *
+ * El resultado se guarda en pill._gestureOutcome y se reinicia en cada
+ * pointerdown. No hay bandera pegajosa que espere al click: si el puntero
+ * se suelta fuera de la pill y el click nunca llega, el valor viejo se pisa
+ * en el próximo pointerdown.
+ */
+function attachPillGesture(pill, agent) {
+  let pressData = null;
+
+  pill.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    pill.setPointerCapture(e.pointerId);
+    pill._gestureOutcome = null; // reiniciar en cada pointerdown
+
+    const pointerId = e.pointerId;
+    const startX = e.clientX;
+    const startY = e.clientY;
+
+    pressData = {
+      pointerId,
+      startX,
+      startY,
+      movedPx: 0,
+      lifted: false,
+      timer: setTimeout(() => {
+        if (!pressData || pressData.pointerId !== pointerId) return;
+        // H11(i): si el poll destruyó la pill durante la espera, no crear dragState.
+        if (!pill.isConnected) { pressData = null; pressState = null; return; }
+        pressData.lifted = true;
+        pill.style.transform = 'scale(1.08)';
+        pill.style.boxShadow = '0 4px 12px rgba(0,0,0,0.3)';
+        pill.style.cursor = 'grabbing';
+        pill.style.zIndex = '50';
+        pill.style.position = 'relative';
+        dragState = {
+          pillEl: pill,
+          pointerId,
+          preOrderNames: [...orderFor(cwd())], // H14: snapshot del workspace actual
+          dirty: false,
+          lastReorderPt: null, // histéresis: punto del último reordenamiento
+        };
+      }, HOLD_MS),
+    };
+
+    // H11(ii): registrar el estado pendiente desde el pointerdown para que
+    // renderPills no destruya la pill durante el segundo de espera.
+    pressState = { abort: () => { clearTimeout(pressData?.timer); pressData = null; } };
+  });
+
+  pill.addEventListener('pointermove', (e) => {
+    if (!pressData || e.pointerId !== pressData.pointerId) return;
+
+    const dx = e.clientX - pressData.startX;
+    const dy = e.clientY - pressData.startY;
+    pressData.movedPx = trackPress(pressData.movedPx, dx, dy);
+
+    // Cancelar el timer si se movió demasiado antes del segundo.
+    if (!pressData.lifted && pressData.movedPx > SLOP_PX) {
+      clearTimeout(pressData.timer);
+      pressData.timer = null;
+    }
+
+    // Reordenar las otras pills durante el arrastre (v2: la pill capturada NO se mueve).
+    if (dragState?.pillEl === pill && pillsContainerEl) {
+      const otherPills = Array.from(pillsContainerEl.children).filter((el) => el !== pill);
+      const rects = otherPills.map((el) => {
+        const r = el.getBoundingClientRect();
+        return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, width: r.width, height: r.height };
+      });
+      const nuevo = insertionIndex(rects, { x: e.clientX, y: e.clientY });
+      const point = { x: e.clientX, y: e.clientY };
+      if (shouldReorder(point, dragState.lastReorderPt)) {
+        const moves = crossingMoves([...pillsContainerEl.children], pill, nuevo);
+        if (moves.length) {
+          for (const mv of moves) pillsContainerEl.insertBefore(mv.node, mv.before);
+          dragState.lastReorderPt = point;
+        }
+      }
+    }
+  });
+
+  pill.addEventListener('pointerup', (e) => {
+    if (!pressData || e.pointerId !== pressData.pointerId) return;
+    // Capturar antes de que endDrag limpie pressData vía pressState.abort().
+    const pd = pressData;
+    pill._gestureOutcome = pressOutcome({ lifted: pd.lifted, movedPx: pd.movedPx });
+    endDrag(dragState?.pillEl === pill);
+  });
+
+  pill.addEventListener('pointercancel', (e) => {
+    if (!pressData || e.pointerId !== pressData.pointerId) return;
+    pill._gestureOutcome = 'cancel';
+    endDrag(false);
+  });
+
+  pill.addEventListener('lostpointercapture', (e) => {
+    if (!pressData || e.pointerId !== pressData.pointerId) return;
+    endDrag(false);
+  });
+
+  pill.addEventListener('click', (e) => {
+    // Activación por teclado (Enter / Espacio): e.detail === 0.
+    if (e.detail === 0) {
+      target = agent.name;
+      renderPills(currentAgents);
+      composerInput?.focus();
+      return;
+    }
+    // Activación por puntero: sólo si el gesto fue un tap limpio.
+    if (pill._gestureOutcome === 'tap') {
+      target = agent.name;
+      renderPills(currentAgents);
+      composerInput?.focus();
+    }
+  });
 }
 
 function renderComposer(agents) {

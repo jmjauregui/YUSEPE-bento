@@ -26,9 +26,11 @@
  * --------------------------------------------------------------
  */
 import {
-  crossedMessages, formatForTerminal, listMessages, markDelivered,
-  normalizeName, pendingDeliveries, readHead, watchLoop,
+  crossedMessages, formatForTerminal, listMessages, listAgents, markDelivered,
+  normalizeName, pendingDeliveries, postMessage, readHead, readLastMessage, watchLoop,
 } from './loopOps.js';
+import { readObserverAgent } from './projectConfigOps.js';
+import { decideObserver, observerText, OBSERVER_THRESHOLD_MS } from './loopObserver.js';
 import * as diag from './loopDiag.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -39,6 +41,9 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * vueltas que piden a mano y no dependan del reloj.
  */
 const POLL_MS = 1500;
+
+/** Cada cuánto corre el observador de inactividad (30 s). */
+const OBSERVER_CHECK_MS = 30_000;
 
 /** Espera tras un cambio antes de repartir, para no repartir a medias. */
 const DEBOUNCE_MS = 120;
@@ -155,6 +160,8 @@ export function createDispatcher({
   // Los tests que cuentan entregas la apagan: si no, sus propias escrituras
   // disparan vueltas de fondo y el conteo depende del reloj.
   watchFs = true,
+  // Inyectable para tests: cuándo imprimió por última vez cada terminal.
+  lastDataAt = () => null,
 } = {}) {
   /**
    * Bindings y presencia indexados por workspace (cwd → Map).
@@ -253,10 +260,24 @@ export function createDispatcher({
    * @param {string} [targetCwd]  si se omite, fusiona todos los workspaces
    */
   function presenceSnapshot(targetCwd) {
-    if (targetCwd) return Object.fromEntries(presenceFor(targetCwd));
+    if (targetCwd) {
+      const bindings = bindingsFor(targetCwd);
+      const result = {};
+      for (const [name, info] of presenceFor(targetCwd)) {
+        const ptyId = bindings.get(name);
+        const lda = ptyId ? lastDataAt(ptyId) : null;
+        result[name] = lda != null ? { ...info, lastDataAt: lda } : { ...info };
+      }
+      return result;
+    }
     const merged = {};
-    for (const p of allPresence.values()) {
-      for (const [k, v] of p) merged[k] = v;
+    for (const [cwd, p] of allPresence.entries()) {
+      const bindings = allBindings.get(cwd) ?? new Map();
+      for (const [k, v] of p) {
+        const ptyId = bindings.get(k);
+        const lda = ptyId ? lastDataAt(ptyId) : null;
+        merged[k] = lda != null ? { ...v, lastDataAt: lda } : { ...v };
+      }
     }
     return merged;
   }
@@ -378,6 +399,88 @@ export function createDispatcher({
     }, DEBOUNCE_MS);
   }
 
+  /* ---------- Observador de inactividad ---------- */
+
+  // Umbral actual (ms). null = desactivado. Lo empuja el renderer por IPC.
+  let observerThresholdMs = OBSERVER_THRESHOLD_MS;
+
+  function setObserverThreshold(ms) {
+    observerThresholdMs = ms ?? null;
+  }
+
+  /**
+   * Corre cada OBSERVER_CHECK_MS en la chain del workspace.
+   * Nunca compite con un reparto en curso: se encola en state.chain.
+   */
+  async function observe(targetCwd) {
+    const threshold = observerThresholdMs;
+    if (threshold == null) return;
+
+    const state = cwds.get(targetCwd);
+    if (!state) return;
+
+    let agents, lastMessage, designated;
+    try {
+      [agents, lastMessage, designated] = await Promise.all([
+        listAgents(targetCwd),
+        readLastMessage(targetCwd),
+        readObserverAgent(targetCwd),
+      ]);
+    } catch {
+      return;
+    }
+
+    const cwdBindings = bindingsFor(targetCwd);
+    const bound = new Set(cwdBindings.keys());
+
+    const lastDataAtByAgent = {};
+    for (const name of bound) {
+      const ptyId = cwdBindings.get(name);
+      const ts = ptyId ? lastDataAt(ptyId) : null;
+      if (ts != null) lastDataAtByAgent[name] = ts;
+    }
+
+    const result = decideObserver({
+      now: Date.now(),
+      thresholdMs: threshold,
+      watchStartedAt: state.watchStartedAt,
+      agents,
+      lastMessage,
+      bound,
+      lastDataAtByAgent,
+      designated,
+      alerted: state.alertedMap,
+    });
+
+    state.alertedMap = result.alerted;
+
+    for (const notice of result.notices) {
+      let minutesAgo;
+      if (notice.case === 'undeliverable') {
+        minutesAgo = lastMessage
+          ? (Date.now() - new Date(lastMessage.createdAt).getTime()) / 60_000
+          : 0;
+      } else {
+        minutesAgo = notice.about.reduce((acc, name) => {
+          const a = agents.find((ag) => ag.name === name);
+          const updatedAt = a ? new Date(a.updatedAt).getTime() : Date.now();
+          const lastData = lastDataAtByAgent[name] ?? updatedAt;
+          return Math.max(acc, (Date.now() - Math.max(updatedAt, lastData)) / 60_000);
+        }, 0);
+      }
+
+      let seq = null;
+      if (notice.case === 'dropped' && lastMessage) {
+        const all = await listMessages(targetCwd).catch(() => []);
+        const found = all.find((m) => m.id === lastMessage.id);
+        seq = found?.seq ?? null;
+      }
+
+      const text = observerText({ case: notice.case, about: notice.about, minutesAgo, seq });
+      await postMessage(targetCwd, { from: 'bento', to: notice.to, text }).catch(() => {});
+    }
+  }
+
   /**
    * Arranca a vigilar un workspace. Idempotente: si ya se está vigilando
    * ese cwd, no hace nada. No detiene otros workspaces activos: en modo
@@ -389,8 +492,17 @@ export function createDispatcher({
   function start(nextCwd) {
     if (!nextCwd || cwds.has(nextCwd)) return; // idempotente
 
-    const state = { poll: null, unwatch: null, debounce: null, chain: Promise.resolve([]) };
+    const state = { poll: null, unwatch: null, debounce: null, chain: Promise.resolve([]),
+      watchStartedAt: Date.now(), alertedMap: new Map(), observer: null };
     cwds.set(nextCwd, state);
+
+    // Timer del observador: corre cada 30 s en la chain para no competir con repartos.
+    state.observer = setInterval(() => {
+      state.chain = state.chain.then(
+        () => observe(nextCwd),
+        () => observe(nextCwd),
+      );
+    }, OBSERVER_CHECK_MS);
 
     // `fs.watch` es el camino rápido, pero se pierde eventos según el SO y
     // no existe hasta que exista la carpeta. El intervalo es la red: hace
@@ -431,6 +543,7 @@ export function createDispatcher({
       if (!state) continue;
       if (state.debounce) { clearTimeout(state.debounce); state.debounce = null; }
       if (state.poll) { clearInterval(state.poll); state.poll = null; }
+      if (state.observer) { clearInterval(state.observer); state.observer = null; }
       if (state.unwatch) { try { state.unwatch(); } catch { /* noop */ } state.unwatch = null; }
       cwds.delete(c);
     }
@@ -460,5 +573,7 @@ export function createDispatcher({
     presence: presenceSnapshot,
     /** Workspaces con el loop corriendo (los que reparte). */
     activeCwds: () => [...cwds.keys()],
+    setObserverThreshold,
+    observe,
   };
 }
