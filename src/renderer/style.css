@@ -565,6 +565,9 @@
     border-left: 1px solid var(--color-line);
   }
   #loop-sidebar.is-expanded .sidebar-resize-handle { display: none; }
+  /* Expandido, los agentes están siempre visibles: el botón del acordeón no
+     tiene función ahí (sigue en el panel lateral). */
+  #loop-sidebar.is-expanded .loop-roster-btn { display: none; }
 
   /* Divisores arrastrables de la vista expandida: invisibles hasta el
      hover, con la misma línea de acento que el resize de los paneles. */

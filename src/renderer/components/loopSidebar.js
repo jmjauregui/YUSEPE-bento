@@ -1070,6 +1070,9 @@ function setExpanded(on, { animate = true } = {}) {
 
   if (on) {
     panelEl.classList.add('is-expanded');
+    // Agentes siempre visibles en la vista expandida (aunque el acordeón los
+    // hubiera ocultado en el panel lateral).
+    rosterEl.classList.remove('hidden');
     applyPanelPosition(pos); // elimina el asa (isExpanded ya es true)
     mountRight();
     renderTilesList();
@@ -1086,6 +1089,8 @@ function setExpanded(on, { animate = true } = {}) {
     expandAnim = null;
     panelEl.classList.remove('is-expanded');
     applyPanelPosition(pos); // recrea el asa en el borde de la posición vigente
+    // De vuelta al panel lateral rige el acordeón: se muestra y se oculta solo.
+    accordion?.open();
     unmountRight();
     followLast();
   };
@@ -1192,7 +1197,7 @@ function buildChrome() {
   ]);
 
   rosterBtnEl = h('button', {
-    class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg px-1 shrink-0',
+    class: 'loop-roster-btn inline-flex items-center justify-center text-fg-muted hover:text-fg px-1 shrink-0',
     'aria-expanded': 'true',
     'aria-label': 'Agentes del loop',
     title: 'Agentes del loop',
@@ -1340,7 +1345,9 @@ function buildChrome() {
   accordion = createRosterAccordion({
     isHeld: () => rosterEl.matches(':hover') || rosterEl.contains(document.activeElement),
     onChange: (open) => {
-      if (open) {
+      // Expandido, los agentes están siempre a la vista: el acordeón que se
+      // oculta solo es para el panel lateral, donde el espacio es poco.
+      if (open || isExpanded) {
         rosterEl.classList.remove('hidden');
       } else {
         rosterEl.classList.add('hidden');
