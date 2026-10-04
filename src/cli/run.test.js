@@ -565,3 +565,79 @@ describe('diag', () => {
     expect(out).not.toContain('node-pty');         // NO acusa node-pty
   });
 });
+
+// Decisiones y permisos (spec 038).
+describe('preguntar', () => {
+  beforeEach(setupAgents);
+
+  it('crea la pregunta con sus opciones y deja al agente en waiting', async () => {
+    const { code, out } = await cli(['preguntar', '¿Postgres o SQLite?', '--opcion', 'Postgres', '--opcion', 'SQLite']);
+    expect(code).toBe(0);
+    expect(out).toContain('Pregunta #1 enviada');
+    const [q] = await listMessages(cwd);
+    expect(q).toMatchObject({ kind: 'question', to: 'usuario', options: ['Postgres', 'SQLite'] });
+    expect((await getAgent(cwd, 'claudio')).state).toBe('waiting');
+  });
+
+  it('una a la vez: con una abierta, la segunda falla y dice qué hacer', async () => {
+    await cli(['preguntar', '¿A?', '-o', 'sí', '-o', 'no']);
+    const { code, err } = await cli(['preguntar', '¿B?', '-o', 'sí', '-o', 'no']);
+    expect(code).toBe(1);
+    expect(err).toContain('Ya tenés una pregunta abierta (#1)');
+  });
+
+  it('respondida, se puede volver a preguntar', async () => {
+    await cli(['preguntar', '¿A?', '-o', 'sí', '-o', 'no']);
+    await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'sí', replyTo: 1, choice: 0 });
+    expect((await cli(['preguntar', '¿B?', '-o', 'sí', '-o', 'no'])).code).toBe(0);
+  });
+
+  it('sin al menos 2 opciones explica el uso', async () => {
+    const { code, err } = await cli(['preguntar', '¿A?', '--opcion', 'sólo una']);
+    expect(code).toBe(1);
+    expect(err).toContain('--opcion');
+  });
+});
+
+describe('permiso', () => {
+  beforeEach(setupAgents);
+
+  it('crea un aviso de permiso para el usuario', async () => {
+    const { code, out } = await cli(['permiso', 'voy a correr las migraciones']);
+    expect(code).toBe(0);
+    expect(out).toContain('abrir tu terminal');
+    expect((await listMessages(cwd))[0]).toMatchObject({ kind: 'permission', to: 'usuario' });
+  });
+
+  async function hook(stdin, opts = {}) {
+    let out = '';
+    let err = '';
+    const code = await run(['permiso', '--hook'], {
+      cwd: opts.cwd || cwd,
+      env: { YBENTO_AGENT: 'claudio', ...(opts.env || {}) },
+      out: (t) => { out += t; },
+      err: (t) => { err += t; },
+      readStdin: async () => stdin,
+      isTTY: false,
+    });
+    return { code, out, err };
+  }
+
+  it('--hook toma el mensaje de permiso del JSON de Claude Code, en silencio', async () => {
+    const r = await hook(JSON.stringify({ hook_event_name: 'Notification', message: 'Claude needs your permission to use Bash' }));
+    expect(r).toEqual({ code: 0, out: '', err: '' });
+    expect((await listMessages(cwd))[0]).toMatchObject({ kind: 'permission', text: 'Claude needs your permission to use Bash' });
+  });
+
+  it('--hook ignora otras notificaciones (p. ej. "esperando tu input")', async () => {
+    await hook(JSON.stringify({ message: 'Claude is waiting for your input' }));
+    await hook(JSON.stringify({ notification_type: 'idle_prompt', message: 'Claude is waiting for your input' }));
+    expect(await listMessages(cwd)).toEqual([]);
+  });
+
+  it('--hook nunca falla ni imprime: sin identidad, sin workspace o con basura', async () => {
+    expect(await hook('no es json')).toEqual({ code: 0, out: '', err: '' });
+    expect(await hook('{"message":"needs your permission"}', { env: { YBENTO_AGENT: '' } })).toEqual({ code: 0, out: '', err: '' });
+    expect(await hook('{"message":"needs your permission"}', { cwd: os.tmpdir() })).toEqual({ code: 0, out: '', err: '' });
+  });
+});

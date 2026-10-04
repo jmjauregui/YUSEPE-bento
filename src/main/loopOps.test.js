@@ -20,7 +20,8 @@ import path from 'path';
 import { promisify } from 'util';
 
 import {
-  crossedMessages, DEFAULT_SKILL, ensureSkill, findMessage, formatForTerminal, getAgent, inbox, inboxSummary,
+  crossedMessages, DEFAULT_SKILL, ensureSkill, findMessage, formatForTerminal,
+  installPermissionHook, hasPermissionHook, openQuestion, permissionFromHook, skillStatus, skillVersion, resetSkill, PERMISSION_HOOK_COMMAND, getAgent, inbox, inboxSummary,
   listAgents, listMessages, LOOP_DIR, markDelivered, MESSAGES_FILE, normalizeName,
   pendingDeliveries, postMessage, readHead, registerAgent, readSkill, setAgentState,
   SKILL_FILE, STATUS_FILE, unregisterAgent, writeSkill,
@@ -771,5 +772,103 @@ describe('seguridad', () => {
     } finally {
       await fs.rm(otro, { recursive: true, force: true });
     }
+  });
+});
+
+// Decisiones y permisos (spec 038).
+describe('preguntas y permisos', () => {
+  beforeEach(setupAgents);
+
+  it('una pregunta valida sus opciones (2 a 6, no vacías, largo acotado)', async () => {
+    const q = await postMessage(cwd, { from: 'claudio', to: 'usuario', text: '¿A?', kind: 'question', options: [' A ', 'B', ''] });
+    expect(q.options).toEqual(['A', 'B']);
+    await expect(postMessage(cwd, { from: 'claudio', to: 'usuario', text: '?', kind: 'question', options: ['A'] }))
+      .rejects.toThrow(/entre 2 y 6/);
+    await expect(postMessage(cwd, { from: 'claudio', to: 'usuario', text: '?', kind: 'question', options: 'ABCDEFG'.split('') }))
+      .rejects.toThrow(/entre 2 y 6/);
+    await expect(postMessage(cwd, { from: 'claudio', to: 'usuario', text: '?', kind: 'question', options: ['x'.repeat(201), 'B'] }))
+      .rejects.toThrow(/200/);
+  });
+
+  it('un tipo desconocido, o del usuario, se descarta: queda un mensaje normal', async () => {
+    expect((await postMessage(cwd, { from: 'claudio', to: 'usuario', text: 'x', kind: 'raro' })).kind).toBeUndefined();
+    expect((await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'x', kind: 'permission' })).kind).toBeUndefined();
+  });
+
+  it('la respuesta se deriva del hilo, con la opción elegida', async () => {
+    await postMessage(cwd, { from: 'claudio', to: 'usuario', text: '¿A o B?', kind: 'question', options: ['A', 'B'] });
+    expect((await listMessages(cwd))[0].answer).toBeNull();
+    expect(openQuestion(await listMessages(cwd), 'claudio').seq).toBe(1);
+
+    await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'B', replyTo: 1, choice: 1 });
+    const [q] = await listMessages(cwd);
+    expect(q.answer).toEqual({ seq: 2, choice: 1, text: 'B' });
+    expect(openQuestion(await listMessages(cwd), 'claudio')).toBeNull();
+  });
+
+  it('choice fuera de rango, o sin pregunta detrás, no se guarda ("otra respuesta")', async () => {
+    await postMessage(cwd, { from: 'claudio', to: 'usuario', text: '¿A o B?', kind: 'question', options: ['A', 'B'] });
+    expect((await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'C', replyTo: 1, choice: 5 })).choice).toBeUndefined();
+    await postMessage(cwd, { from: 'claudio', to: 'opencito', text: 'normal' });
+    expect((await postMessage(cwd, { from: 'usuario', to: 'claudio', text: 'x', replyTo: 3, choice: 0 })).choice).toBeUndefined();
+    expect((await listMessages(cwd))[0].answer).toMatchObject({ choice: null, text: 'C' });
+  });
+
+  it('un permiso queda atendido cuando el agente vuelve a escribir', async () => {
+    await postMessage(cwd, { from: 'claudio', to: 'usuario', text: 'necesito permiso', kind: 'permission' });
+    expect((await listMessages(cwd))[0].attended).toBe(false);
+    await postMessage(cwd, { from: 'opencito', to: 'usuario', text: 'otro agente' });
+    expect((await listMessages(cwd))[0].attended).toBe(false);
+    await postMessage(cwd, { from: 'claudio', to: 'usuario', text: 'listo, seguí' });
+    expect((await listMessages(cwd))[0].attended).toBe(true);
+  });
+
+  it('permissionFromHook: sólo pedidos de permiso', () => {
+    expect(permissionFromHook('{"message":"Claude needs your permission to use Bash"}')).toBe('Claude needs your permission to use Bash');
+    expect(permissionFromHook('{"notification_type":"permission_prompt","message":"Run rm?"}')).toBe('Run rm?');
+    expect(permissionFromHook('{"message":"Claude is waiting for your input"}')).toBeNull();
+    expect(permissionFromHook('{"notification_type":"idle_prompt","message":"needs your permission"}')).toBeNull();
+    expect(permissionFromHook('basura')).toBeNull();
+  });
+});
+
+describe('hook de permisos de Claude Code', () => {
+  const settingsFile = () => path.join(cwd, '.claude', 'settings.local.json');
+
+  it('lo instala sin pisar otros hooks ni otros ajustes, y es idempotente', async () => {
+    await fs.mkdir(path.join(cwd, '.claude'), { recursive: true });
+    await fs.writeFile(settingsFile(), JSON.stringify({
+      permissions: { allow: ['Bash(npm test)'] },
+      hooks: { Notification: [{ hooks: [{ type: 'command', command: 'say hola' }] }], Stop: [{ hooks: [] }] },
+    }));
+    expect(await hasPermissionHook(cwd)).toBe(false);
+
+    expect((await installPermissionHook(cwd)).installed).toBe(true);
+    expect((await installPermissionHook(cwd)).installed).toBe(false);
+
+    const s = JSON.parse(await fs.readFile(settingsFile(), 'utf8'));
+    expect(s.permissions.allow).toEqual(['Bash(npm test)']);
+    expect(s.hooks.Stop).toEqual([{ hooks: [] }]);
+    const commands = s.hooks.Notification.flatMap((g) => g.hooks.map((x) => x.command));
+    expect(commands).toEqual(['say hola', PERMISSION_HOOK_COMMAND]);
+    expect(await hasPermissionHook(cwd)).toBe(true);
+  });
+
+  it('crea el archivo si no existe, y no toca uno ilegible', async () => {
+    expect((await installPermissionHook(cwd)).installed).toBe(true);
+    await fs.writeFile(settingsFile(), '{ roto');
+    await expect(installPermissionHook(cwd)).rejects.toThrow(/arreglalo a mano/i);
+    expect(await fs.readFile(settingsFile(), 'utf8')).toBe('{ roto');
+  });
+});
+
+describe('versión del protocolo', () => {
+  it('el default es la versión actual; un skill sin marca es v1 y está desactualizado', async () => {
+    expect(skillVersion(DEFAULT_SKILL)).toBe(3);
+    expect(skillVersion('# mi protocolo')).toBe(1);
+    await writeSkill(cwd, '# protocolo viejo');
+    expect(await skillStatus(cwd)).toEqual({ current: 1, latest: 3, outdated: true });
+    await resetSkill(cwd);
+    expect((await skillStatus(cwd)).outdated).toBe(false);
   });
 });

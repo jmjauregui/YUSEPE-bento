@@ -137,6 +137,10 @@ contextBridge.exposeInMainWorld('yusepe', {
     skill: (cwd) => ipcRenderer.invoke('loop:skill', { cwd }),
     setSkill: (cwd, content) => ipcRenderer.invoke('loop:set-skill', { cwd, content }),
     ensureSkill: (cwd) => ipcRenderer.invoke('loop:ensure-skill', { cwd }),
+    skillStatus: (cwd) => ipcRenderer.invoke('loop:skill-status', { cwd }),
+    resetSkill: (cwd) => ipcRenderer.invoke('loop:reset-skill', { cwd }),
+    hasHook: (cwd) => ipcRenderer.invoke('loop:has-hook', { cwd }),
+    installHook: (cwd) => ipcRenderer.invoke('loop:install-hook', { cwd }),
 
     // Asocia un agente con la terminal donde corre (efímero: el ptyId
     // muere con la terminal, la identidad no).

@@ -298,11 +298,84 @@ export async function readDirty(cwd) {
   }
 }
 
+/* ---------- Decisiones y permisos (spec 038) ---------- */
+
+/**
+ * Tipos de mensaje además del normal:
+ *   - `question`: un agente le pide al usuario que decida entre opciones
+ *     (`ybento preguntar`). El chat la muestra como tarjeta con botones.
+ *   - `permission`: un agente quedó (o va a quedar) frenado en un diálogo de
+ *     permiso de su TUI (`ybento permiso`, o el hook de Claude Code).
+ * Son mensajes del loop como cualquier otro: mismo archivo, mismo hilo.
+ */
+export const MESSAGE_KINDS = ['question', 'permission'];
+export const MIN_OPTIONS = 2;
+export const MAX_OPTIONS = 6;
+export const MAX_OPTION_CHARS = 200;
+
+/**
+ * Valida los campos tipados de un mensaje nuevo. Lo que no cumple se
+ * descarta (y para una pregunta, tira: una pregunta sin opciones válidas no
+ * es una pregunta). `choice` sólo vale si responde a una pregunta real y
+ * cae dentro de sus opciones.
+ */
+async function typedFields(cwd, { kind, options, choice, replyTo, sender }) {
+  const out = {};
+  if (kind && MESSAGE_KINDS.includes(kind) && sender !== 'usuario') {
+    out.kind = kind;
+    if (kind === 'question') {
+      const opts = (Array.isArray(options) ? options : [])
+        .map((o) => String(o ?? '').replace(/\s+/g, ' ').trim())
+        .filter(Boolean);
+      if (opts.length < MIN_OPTIONS || opts.length > MAX_OPTIONS) {
+        throw new Error(`Una pregunta lleva entre ${MIN_OPTIONS} y ${MAX_OPTIONS} opciones (vinieron ${opts.length}).`);
+      }
+      const long = opts.find((o) => o.length > MAX_OPTION_CHARS);
+      if (long) throw new Error(`Cada opción va en hasta ${MAX_OPTION_CHARS} caracteres: "${long.slice(0, 40)}…"`);
+      out.options = opts;
+    }
+  }
+  if (sender === 'usuario' && replyTo && Number.isInteger(choice)) {
+    const question = (await listMessages(cwd))[Number(replyTo) - 1];
+    if (question?.kind === 'question' && choice >= 0 && choice < (question.options?.length || 0)) {
+      out.choice = choice;
+    }
+  }
+  return out;
+}
+
+/**
+ * Deriva del hilo el estado de preguntas y permisos, sin guardarlo aparte:
+ *   - pregunta → `answer` = { seq, choice, text } del primer mensaje del
+ *     usuario que le responde (`replyTo`);
+ *   - permiso → `attended` = el agente volvió a escribir después.
+ * Reiniciar Bento o leer el `.jsonl` a mano da el mismo estado.
+ */
+export function annotateThread(messages) {
+  for (const msg of messages) {
+    if (msg.kind === 'question') {
+      const reply = messages.find((m) => m.seq > msg.seq && m.from === 'usuario' && m.replyTo === msg.seq);
+      msg.answer = reply ? { seq: reply.seq, choice: Number.isInteger(reply.choice) ? reply.choice : null, text: reply.text } : null;
+    } else if (msg.kind === 'permission') {
+      msg.attended = messages.some((m) => m.seq > msg.seq && m.from === msg.from);
+    }
+  }
+  return messages;
+}
+
+/** La pregunta sin responder de un agente, o null. Una a la vez. */
+export function openQuestion(messages, agent) {
+  const id = normalizeName(agent);
+  return [...messages].reverse().find((m) => m.kind === 'question' && m.from === id && !m.answer) || null;
+}
+
 /**
  * Postea un mensaje. `from` puede ser un agente o `usuario` (el humano
  * escribiendo desde el panel lateral).
  */
-export async function postMessage(cwd, { from, to, text, replyTo = null, seenUpTo: seenByUser = null } = {}) {
+export async function postMessage(cwd, {
+  from, to, text, replyTo = null, seenUpTo: seenByUser = null, kind = null, options = null, choice = null,
+} = {}) {
   const body = String(text ?? '').trim();
   if (!body) throw new Error('El mensaje no puede estar vacío');
 
@@ -331,6 +404,7 @@ export async function postMessage(cwd, { from, to, text, replyTo = null, seenUpT
     // A qué mensaje contesta. Sin esto, dos agentes discuten sin saber cuál
     // de las tres cosas que dijiste te está respondiendo el otro.
     replyTo: replyTo ? Number(replyTo) : null,
+    ...(await typedFields(cwd, { kind, options, choice, replyTo, sender })),
     commit: await readHead(cwd),
     dirty: await readDirty(cwd),
     createdAt: new Date().toISOString(),
@@ -375,6 +449,7 @@ export async function listMessages(cwd, { to = null, limit = 0 } = {}) {
     } catch { /* línea corrupta: se ignora */ }
   }
 
+  annotateThread(messages);
   const filtered = to ? messages.filter((m) => m.to === normalizeName(to)) : messages;
   return limit > 0 ? filtered.slice(-limit) : filtered;
 }
@@ -488,7 +563,22 @@ export async function inboxSummary(cwd, name) {
  * pueda editar a mano y viaje con el repo — el mensaje que Bento pega en la
  * terminal sólo lleva la *ruta* a este archivo, no el protocolo entero.
  */
-export const DEFAULT_SKILL = `# Protocolo del loop de Bento
+/**
+ * Versión del protocolo por defecto. Subirla cuando cambie DEFAULT_SKILL de
+ * una forma que los agentes necesiten saber: los proyectos con un skill.md
+ * más viejo ven en el panel "hay una versión nueva — actualizar".
+ */
+export const SKILL_VERSION = 3;
+const SKILL_MARK = /<!--\s*ybento-skill\s+v(\d+)\s*-->/;
+
+/** Versión de un skill.md: la marca del encabezado, o 1 si no tiene (anterior a la 038). */
+export function skillVersion(text) {
+  const m = String(text ?? '').match(SKILL_MARK);
+  return m ? Number(m[1]) : 1;
+}
+
+export const DEFAULT_SKILL = `<!-- ybento-skill v${SKILL_VERSION} -->
+# Protocolo del loop de Bento
 
 Estás trabajando dentro de un **loop multiagente** de YUSEPE Bento: varias
 terminales, cada una con un agente distinto, que se mandan mensajes para
@@ -508,6 +598,8 @@ ybento bandeja                   # mis mensajes pendientes
 ybento enviar @opencito "texto"  # le mando un mensaje a otro agente
 ybento enviar @usuario "texto"   # le aviso al humano
 ybento enviar @opencito --re 7 "…"  # respondo puntualmente al mensaje #7
+ybento preguntar "¿A o B?" --opcion "A" --opcion "B"  # le pido una decisión al usuario
+ybento permiso "voy a correr X"  # aviso que vas a necesitar un permiso en la terminal
 \`\`\`
 
 Cuando alguien te escribe, **te llega solo un aviso** a esta terminal, de
@@ -544,6 +636,46 @@ O desde un archivo, si ya lo tenías escrito:
 \`\`\`bash
 ybento enviar @claudio -f reporte-qa.md
 \`\`\`
+
+## Cuando necesitás algo del usuario
+
+Hay dos casos y se piden distinto. **Nunca** los dejes sólo en tu terminal:
+el usuario mira el chat del loop, no tu pantalla, y si no se entera quedás
+frenado para siempre.
+
+### Decisiones: preguntá por el loop, con opciones
+
+Si para seguir necesitás que el usuario elija (qué enfoque, qué base de
+datos, si borrar algo), **no uses la herramienta de preguntas de tu
+terminal**. Preguntá con:
+
+\`\`\`bash
+ybento preguntar "¿Qué base de datos usamos para clientes?" \\
+  --opcion "Postgres (la que ya está en el VPS)" \\
+  --opcion "SQLite (más simple, un solo archivo)"
+\`\`\`
+
+- Entre 2 y 6 opciones, concretas y que se entiendan solas: el usuario las
+  ve como botones en el chat. Siempre puede contestar otra cosa.
+- **Una pregunta a la vez.** Si ya tenés una abierta, el comando falla:
+  esperá la respuesta.
+- Después de preguntar **terminá tu turno**: quedás en \`waiting\` y la
+  respuesta te llega como cualquier mensaje, respondiendo a tu pregunta.
+
+### Permisos: avisá y mandalo a la terminal
+
+Los diálogos de permiso de tu herramienta ("¿querés ejecutar esto?") los
+tiene que contestar el usuario **en tu terminal**. Mientras el diálogo está
+abierto vos estás congelado y no podés avisar nada, así que avisá **antes**:
+si vas a ejecutar algo que sabés que va a pedir permiso, primero corré
+
+\`\`\`bash
+ybento permiso "voy a correr las migraciones de la base (pide permiso)"
+\`\`\`
+
+y recién después ejecutalo. En el chat le aparece al usuario con un botón
+para abrir tu terminal. (Si Bento instaló su hook en el proyecto, Claude
+Code avisa solo cuando se abre el diálogo; avisar antes igual ayuda.)
 
 ## Cómo trabajar
 
@@ -620,6 +752,88 @@ export async function ensureSkill(cwd) {
     await writeSkill(cwd, DEFAULT_SKILL);
     return { relPath: SKILL_FILE, created: true };
   }
+}
+
+/** Estado del protocolo del proyecto frente al de esta versión de Bento. */
+export async function skillStatus(cwd) {
+  const current = skillVersion(await readSkill(cwd));
+  return { current, latest: SKILL_VERSION, outdated: current < SKILL_VERSION };
+}
+
+/** Reescribe el skill.md con el protocolo de esta versión (pisa ediciones a mano). */
+export async function resetSkill(cwd) {
+  return writeSkill(cwd, DEFAULT_SKILL);
+}
+
+/* ---------- Hook de permisos de Claude Code (spec 038) ---------- */
+
+/**
+ * Comando del hook. Corre dentro del proceso de Claude Code, que hereda el
+ * entorno de la terminal de Bento (PATH con `ybento`, YBENTO_AGENT). El
+ * `command -v` lo vuelve mudo si alguien abre el proyecto con Claude fuera
+ * de Bento: sin ybento, el hook no hace nada en vez de fallar.
+ */
+export const PERMISSION_HOOK_COMMAND = 'command -v ybento >/dev/null 2>&1 && ybento permiso --hook || true';
+const CLAUDE_LOCAL_SETTINGS = path.join('.claude', 'settings.local.json');
+
+/**
+ * Agrega a `.claude/settings.local.json` un hook `Notification` que avisa al
+ * loop cuando Claude Code pide permiso. En el `.local` y no en el
+ * `settings.json` del repo: depende de tener Bento, así que no es algo para
+ * commitear al equipo. Hace merge (nunca pisa otros hooks) y es idempotente.
+ */
+export async function installPermissionHook(cwd) {
+  const file = resolveSafe(cwd, CLAUDE_LOCAL_SETTINGS);
+  let settings = {};
+  try {
+    settings = JSON.parse(await fs.readFile(file, 'utf8'));
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      throw new Error(`No pude leer ${CLAUDE_LOCAL_SETTINGS}: ${err.message}. Arreglalo a mano antes de instalar el hook.`);
+    }
+  }
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) settings = {};
+  settings.hooks = settings.hooks && typeof settings.hooks === 'object' ? settings.hooks : {};
+  const groups = Array.isArray(settings.hooks.Notification) ? settings.hooks.Notification : [];
+
+  const already = groups.some((g) => (g?.hooks || []).some((x) => x?.command === PERMISSION_HOOK_COMMAND));
+  if (already) return { relPath: CLAUDE_LOCAL_SETTINGS, installed: false };
+
+  groups.push({ hooks: [{ type: 'command', command: PERMISSION_HOOK_COMMAND }] });
+  settings.hooks.Notification = groups;
+
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${process.pid}`;
+  await fs.writeFile(tmp, `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
+  await fs.rename(tmp, file);
+  return { relPath: CLAUDE_LOCAL_SETTINGS, installed: true };
+}
+
+/** ¿El hook ya está instalado en el proyecto? */
+export async function hasPermissionHook(cwd) {
+  try {
+    const settings = JSON.parse(await fs.readFile(resolveSafe(cwd, CLAUDE_LOCAL_SETTINGS), 'utf8'));
+    return (settings?.hooks?.Notification || []).some((g) => (g?.hooks || []).some((x) => x?.command === PERMISSION_HOOK_COMMAND));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Del JSON que Claude Code le pasa al hook `Notification` por stdin, el
+ * texto del aviso si es un pedido de permiso; null si es otra notificación
+ * (p. ej. "está esperando tu input" tras un rato quieto) o si no se entiende.
+ * ponytail: se reconoce por el texto ("permission"); si Claude Code cambia
+ * el formato, el hook queda mudo — no rompe nada — y se ajusta acá.
+ */
+export function permissionFromHook(raw) {
+  let data;
+  try { data = JSON.parse(String(raw || '')); } catch { return null; }
+  const type = String(data?.notification_type || '');
+  const message = String(data?.message || '').trim();
+  if (type && !/permission/i.test(type)) return null;
+  if (!message || (!type && !/permission|permiso/i.test(message))) return null;
+  return message;
 }
 
 /* ---------- Entrega ---------- */

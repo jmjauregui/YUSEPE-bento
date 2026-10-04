@@ -33,6 +33,7 @@ import { focusTileById } from './bentoGrid.js';
 import { pickTerminal } from './terminalPicker.js';
 import { labelFor } from './workspaceManager.js';
 import { thinkingPhrase, workingFor } from '../core/loopThinking.js';
+import { openTerminalPeek } from './terminalPeek.js';
 import { renderMarkdown } from '../core/markdown.js';
 import {
   badgeLabel, cursorAtEnd, ensureCursor, saveCursor, unreadSummary,
@@ -131,6 +132,174 @@ let rightMounted = null;
 
 /** Emoji de avatar por agente, para el hilo (sólo se ve expandido). */
 let agentEmojis = {};
+/** Agentes por nombre (para saber su terminal desde un mensaje). */
+let agentsByName = {};
+
+/* ---------- Decisiones y permisos (spec 038) ---------- */
+
+/**
+ * Permisos que el usuario marcó "Listo" a mano. Estado de la UI, por
+ * workspace, como el cursor de no leídos: el disco sólo sabe si el agente
+ * volvió a escribir (msg.attended).
+ */
+const dismissedKey = () => `yusepe:loop-dismissed:${cwd()}`;
+function dismissedPermissions() {
+  try { return new Set(JSON.parse(localStorage.getItem(dismissedKey()) || '[]')); } catch { return new Set(); }
+}
+function dismissPermission(id) {
+  const set = dismissedPermissions();
+  set.add(id);
+  // Sólo los últimos 200: el resto ya está atendido por el hilo.
+  try { localStorage.setItem(dismissedKey(), JSON.stringify([...set].slice(-200))); } catch { /* noop */ }
+}
+const permissionPending = (msg, dismissed) => msg.kind === 'permission' && !msg.attended && !dismissed.has(msg.id);
+
+/** Abre en el modal la terminal de un agente (ver terminalPeek.js). */
+function peekAgent(name) {
+  const agent = agentsByName[name];
+  if (!agent?.tileId) { toast.error(`No encuentro la terminal de @${name} en este workspace.`); return; }
+  openTerminalPeek(agent.tileId, { title: `${agent.emoji ? `${agent.emoji} ` : ''}@${name} · ${labelForTileId(agent.tileId)}` });
+}
+function labelForTileId(tileId) {
+  const tile = (state.profile?.tiles || []).find((t) => t.id === tileId);
+  return tile ? labelFor(tile) : 'Terminal';
+}
+
+/** Responde una pregunta: un mensaje normal al agente que la hizo. */
+async function answerQuestion(msg, choice, text) {
+  try {
+    await window.yusepe.loop.post(cwd(), {
+      to: msg.from, text, replyTo: msg.seq, choice,
+      seenUpTo: lastMessages[lastMessages.length - 1]?.id || null,
+    });
+    await refresh();
+  } catch (err) {
+    toast.error(err?.message || String(err));
+  }
+}
+
+/** Botones de una pregunta (o la elección ya hecha). */
+function questionControls(msg) {
+  const options = msg.options || [];
+  if (msg.answer) {
+    const chosen = msg.answer.choice;
+    return h('div', { class: 'loop-q-options is-answered' }, [
+      ...options.map((opt, i) => h('div', { class: `loop-q-option ${i === chosen ? 'is-chosen' : 'is-dim'}` },
+        [i === chosen ? '✓ ' : '', opt])),
+      ...(chosen === null ? [h('div', { class: 'loop-q-option is-chosen' }, `✓ ${msg.answer.text}`)] : []),
+    ]);
+  }
+
+  const other = h('div', { class: 'hidden mt-1.5 flex gap-1.5' });
+  const otherInput = h('input', {
+    type: 'text',
+    placeholder: 'Tu respuesta…',
+    class: 'flex-1 min-w-0 bg-bg-soft border border-line rounded-md px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-accent',
+  });
+  const sendOther = () => { const t = otherInput.value.trim(); if (t) answerQuestion(msg, null, t); };
+  otherInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); sendOther(); } });
+  other.append(otherInput, h('button', { class: 'loop-q-send', onClick: sendOther }, 'Responder'));
+
+  return h('div', { class: 'loop-q-options' }, [
+    ...options.map((opt, i) => h('button', {
+      class: 'loop-q-option',
+      onClick: () => answerQuestion(msg, i, opt),
+    }, opt)),
+    h('button', {
+      class: 'loop-q-option is-other',
+      onClick: () => { other.classList.remove('hidden'); otherInput.focus(); },
+    }, 'Otra respuesta…'),
+    other,
+  ]);
+}
+
+/** Acciones de un aviso de permiso. */
+function permissionControls(msg, dismissed) {
+  if (!permissionPending(msg, dismissed)) {
+    return h('div', { class: 'text-[10px] text-fg-subtle mt-1' }, '✓ atendido');
+  }
+  return h('div', { class: 'flex flex-wrap items-center gap-2 mt-1.5' }, [
+    h('button', { class: 'loop-perm-open', onClick: () => peekAgent(msg.from) },
+      [svgIcon('terminal', { size: 12 }), h('span', {}, 'Abrir terminal')]),
+    h('button', {
+      class: 'text-[11px] text-fg-muted hover:text-fg underline-offset-2 hover:underline',
+      onClick: () => {
+        const tileId = agentsByName[msg.from]?.tileId;
+        if (isExpanded) setExpanded(false);
+        if (tileId) focusTileById(tileId);
+      },
+    }, 'Ir al mosaico'),
+    h('button', {
+      class: 'text-[11px] text-fg-muted hover:text-fg underline-offset-2 hover:underline',
+      onClick: () => { dismissPermission(msg.id); refresh(); },
+    }, 'Listo'),
+  ]);
+}
+
+/* ---------- Avisos del panel: protocolo viejo y hook de permisos ---------- */
+
+let noticesEl = null;
+let notices = { skill: null, hook: true };
+const hookDeclinedKey = () => `yusepe:loop-hook-declined:${cwd()}`;
+
+async function refreshNotices() {
+  if (!cwd()) return;
+  try {
+    const [skill, hook] = await Promise.all([
+      window.yusepe.loop.skillStatus(cwd()),
+      window.yusepe.loop.hasHook(cwd()),
+    ]);
+    let declined = false;
+    try { declined = localStorage.getItem(hookDeclinedKey()) === '1'; } catch { /* noop */ }
+    notices = { skill, hook: hook || declined };
+  } catch { /* sin avisos: no vale romper el panel */ }
+  paintNotices();
+}
+
+function paintNotices() {
+  if (!noticesEl) return;
+  const items = [];
+  if (notices.skill?.outdated) {
+    items.push(h('div', { class: 'loop-notice' }, [
+      h('span', { class: 'flex-1' }, `Hay una versión nueva del protocolo de los agentes (v${notices.skill.current} → v${notices.skill.latest}): suma decisiones y permisos por el chat.`),
+      h('button', {
+        class: 'loop-notice-btn',
+        onClick: async () => {
+          const ok = await confirmModal({
+            title: 'Actualizar el protocolo',
+            body: 'Se reescribe .ybento/loop/skill.md con la versión nueva. Si lo editaste a mano, esos cambios se pierden.',
+            confirmLabel: 'Actualizar',
+          });
+          if (!ok) return;
+          await window.yusepe.loop.resetSkill(cwd());
+          toast.success('Protocolo actualizado. Los agentes lo leen en su próximo mensaje.');
+          refreshNotices();
+        },
+      }, 'Actualizar'),
+    ]));
+  }
+  if (notices.hook === false) {
+    items.push(h('div', { class: 'loop-notice' }, [
+      h('span', { class: 'flex-1' }, 'Avisos de permisos de Claude Code en este chat: instalá el hook en el proyecto (.claude/settings.local.json).'),
+      h('button', {
+        class: 'loop-notice-btn',
+        onClick: async () => {
+          try {
+            await window.yusepe.loop.installHook(cwd());
+            toast.success('Hook instalado. Reiniciá los Claude Code del loop para que lo carguen.');
+          } catch (err) { toast.error(err?.message || String(err)); }
+          refreshNotices();
+        },
+      }, 'Instalar'),
+      h('button', {
+        class: 'text-[10px] text-fg-subtle hover:text-fg px-1',
+        onClick: () => { try { localStorage.setItem(hookDeclinedKey(), '1'); } catch { /* noop */ } refreshNotices(); },
+      }, 'No, gracias'),
+    ]));
+  }
+  noticesEl.replaceChildren(...items);
+  noticesEl.classList.toggle('hidden', !items.length);
+}
 
 /** "@claudio está contando cabellos…": agentes en `working` (ver loopThinking). */
 let thinkingEl = null;
@@ -384,6 +553,7 @@ function openSidebar({ animate = true } = {}) {
   document.getElementById('btn-toggle-loop')?.classList.add('is-active');
   persistOpenState(state.profile?.id, true);
   panelEl.classList.remove('hidden');
+  refreshNotices();
   // Preferencia de Configuración: abrir directo en la vista expandida.
   // Al restaurar un workspace no se anima (no fue un gesto del usuario).
   if (getLoopOpenView() === 'expanded' && !isExpanded) setExpanded(true, { animate });
@@ -599,6 +769,11 @@ function renderTilesList() {
     h('span', { class: 'text-fg-subtle shrink-0 flex items-center' }, svgIcon(tile.kind === 'file' ? 'file' : 'terminal', { size: 13 })),
     h('span', { class: 'truncate flex-1' }, labelFor(tile)),
     ...(tile.loopAgent ? [h('span', { class: 'text-[10px] text-accent-soft shrink-0' }, `@${tile.loopAgent}`)] : []),
+    ...(tile.kind === 'terminal' ? [h('span', {
+      class: 'loop-peek-btn',
+      title: 'Abrir acá, sin salir del loop',
+      onClick: (e) => { e.stopPropagation(); openTerminalPeek(tile.id, { title: labelFor(tile) }); },
+    }, svgIcon('external', { size: 11 }))] : []),
   ])) : [h('p', { class: 'text-[11px] text-fg-subtle px-2' }, 'Este espacio no tiene terminales ni archivos fijados.')]));
 }
 
@@ -696,6 +871,7 @@ function buildChrome() {
   ]);
 
   rosterEl = h('div', { class: 'loop-roster shrink-0 border-b border-line px-1.5 py-1.5' });
+  noticesEl = h('div', { class: 'hidden space-y-1 mb-1.5' });
   streamEl = h('div', { class: 'loop-stream flex-1 overflow-y-auto px-2 py-2 space-y-2' });
   emptyEl = h('div', { class: 'loop-empty hidden px-3 py-6 text-center text-[11px] text-fg-subtle leading-relaxed' });
   composerEl = h('div', { class: 'loop-composer shrink-0 px-2.5 pt-1 pb-2.5' });
@@ -739,7 +915,7 @@ async function refresh() {
       window.yusepe.loop.messages(cwd(), { limit: 200 }),
       window.yusepe.loop.presence(cwd()),
     ]);
-    renderRoster(agents, presence || {});
+    renderRoster(agents, presence || {}, messages);
     renderStream(messages, agents);
     renderThinking(agents, presence || {});
     applyUnread(messages);
@@ -797,15 +973,24 @@ function sinceLabel(iso) {
  */
 const STUCK_WORKING_MS = 15 * 60 * 1000;
 
-function renderRoster(agents, presence = {}) {
+function renderRoster(agents, presence = {}, messages = []) {
   rosterEl.innerHTML = '';
+  if (noticesEl) rosterEl.append(noticesEl);
+
+  // Qué espera cada agente del usuario: decisión abierta o permiso pendiente.
+  const dismissed = dismissedPermissions();
+  const waitingOn = {};
+  for (const m of messages) {
+    if (m.kind === 'question' && !m.answer) waitingOn[m.from] = 'question';
+    if (permissionPending(m, dismissed)) waitingOn[m.from] = 'permission';
+  }
 
   if (!agents.length) {
     rosterEl.append(h('p', { class: 'text-[10px] text-fg-subtle px-1.5 py-1 leading-relaxed' },
       'Ninguna terminal está en el loop todavía.'));
   }
 
-  for (const agent of agents) rosterEl.append(agentRow(agent, presence[agent.name]));
+  for (const agent of agents) rosterEl.append(agentRow(agent, presence[agent.name], waitingOn[agent.name]));
 
   rosterEl.append(h('button', {
     class: 'w-full mt-1 text-[11px] px-2 py-1.5 rounded-md border border-line hover:bg-bg-elev transition text-fg-muted',
@@ -813,7 +998,7 @@ function renderRoster(agents, presence = {}) {
   }, '+ Sumar una terminal al loop'));
 }
 
-function agentRow(agent, presence) {
+function agentRow(agent, presence, waitingOn = null) {
   const tile = (state.profile?.tiles || []).find((t) => t.id === agent.tileId);
   const absent = presence?.present === false;
   const stuck = agent.state === 'working'
@@ -825,6 +1010,10 @@ function agentRow(agent, presence) {
   if (absent) {
     subtitle = h('div', { class: 'text-[10px] text-red-400/90 truncate' },
       `terminal en el prompt (${presence.foreground}) — no recibe`);
+  } else if (waitingOn === 'permission') {
+    subtitle = h('div', { class: 'text-[10px] text-amber-400/90 truncate' }, '🔐 pide permiso en su terminal');
+  } else if (waitingOn === 'question') {
+    subtitle = h('div', { class: 'text-[10px] text-accent-soft truncate' }, '❓ esperando tu decisión');
   } else if (stuck) {
     subtitle = h('div', { class: 'text-[10px] text-amber-400/90 truncate' },
       `ocupado ${sinceLabel(agent.updatedAt)} — ¿se colgó?`);
@@ -858,6 +1047,11 @@ function agentRow(agent, presence) {
       subtitle,
     ]),
     h('div', { class: 'hidden group-hover:flex gap-0.5 shrink-0' }, [
+      ...(tile ? [h('button', {
+        class: 'inline-flex items-center text-fg-muted hover:text-fg px-1',
+        title: 'Abrir su terminal acá (sin salir del loop)',
+        onClick: (e) => { e.stopPropagation(); peekAgent(agent.name); },
+      }, svgIcon('terminal', { size: 12 }))] : []),
       // Sólo aparece cuando hace falta: liberar a mano un agente que quedó
       // colgado en `working`, para que su bandeja vuelva a fluir.
       ...(stuck ? [h('button', {
@@ -918,8 +1112,13 @@ function renderStream(messages, agents) {
   // "qué dijo @qa", no a quién se lo dijo.
   const colors = Object.fromEntries(agents.map((a) => [a.name, colorOf(a)]));
   agentEmojis = Object.fromEntries(agents.map((a) => [a.name, a.emoji || null]));
-  // Si cambia un color o un emoji, las burbujas ya pintadas quedan viejas.
-  const sig = JSON.stringify([colors, agentEmojis]);
+  agentsByName = Object.fromEntries(agents.map((a) => [a.name, a]));
+  // Si cambia un color, un emoji, o se responde una pregunta / se atiende un
+  // permiso, las burbujas ya pintadas quedan viejas: se rehace el hilo.
+  const dismissed = dismissedPermissions();
+  const kinds = messages.filter((m) => m.kind)
+    .map((m) => [m.id, m.answer?.seq ?? null, permissionPending(m, dismissed)]);
+  const sig = JSON.stringify([colors, agentEmojis, kinds]);
 
   // RED: la firma de colores cambió (agente renombrado, color editado,
   // agente nuevo o que salió). Evento raro, siempre disparado por el usuario
@@ -1024,7 +1223,9 @@ function messageRow(msg, colors = {}) {
 
   const parts = [header, body];
 
-  if (msg.text.length > LONG_MESSAGE_CHARS) parts.push(collapseToggle(msg, body));
+  if (msg.kind === 'question') parts.push(questionControls(msg));
+  else if (msg.kind === 'permission') parts.push(permissionControls(msg, dismissedPermissions()));
+  else if (msg.text.length > LONG_MESSAGE_CHARS) parts.push(collapseToggle(msg, body));
 
   // Borde izquierdo grueso + un lavado del mismo color sobre el fondo del
   // tile. Se tiñe el fondo y no el texto porque estos mensajes son reportes

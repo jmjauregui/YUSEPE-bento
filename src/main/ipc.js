@@ -483,13 +483,20 @@ export function registerIpc({ app, profilesDir, broadcast = () => {} }) {
 
   ipcMain.handle('loop:messages', (_e, { cwd, to, limit }) =>
     loopOps.listMessages(cwd, { to, limit }));
-  ipcMain.handle('loop:post', (_e, { cwd, from, to, text, replyTo, seenUpTo }) =>
-    loopOps.postMessage(cwd, { from: from || 'usuario', to, text, replyTo, seenUpTo }));
+  // Desde el panel escribe el usuario: `kind` no se acepta acá (preguntas y
+  // permisos los crean los agentes por el CLI); `choice` sí, al responder.
+  ipcMain.handle('loop:post', (_e, { cwd, to, text, replyTo, seenUpTo, choice }) =>
+    loopOps.postMessage(cwd, { from: 'usuario', to, text, replyTo, seenUpTo, choice }));
   ipcMain.handle('loop:inbox', (_e, { cwd, name }) => loopOps.inbox(cwd, name));
 
   ipcMain.handle('loop:skill', (_e, { cwd }) => loopOps.readSkill(cwd));
   ipcMain.handle('loop:set-skill', (_e, { cwd, content }) => loopOps.writeSkill(cwd, content));
   ipcMain.handle('loop:ensure-skill', (_e, { cwd }) => loopOps.ensureSkill(cwd));
+  // Protocolo desactualizado y hook de permisos (spec 038).
+  ipcMain.handle('loop:skill-status', (_e, { cwd }) => loopOps.skillStatus(cwd));
+  ipcMain.handle('loop:reset-skill', (_e, { cwd }) => loopOps.resetSkill(cwd));
+  ipcMain.handle('loop:has-hook', (_e, { cwd }) => loopOps.hasPermissionHook(cwd));
+  ipcMain.handle('loop:install-hook', (_e, { cwd }) => loopOps.installPermissionHook(cwd));
 
   // Asocia un agente con la terminal donde corre. Es efímero a propósito
   // (ver la cabecera de loopDispatcher.js): el ptyId muere con la terminal.
@@ -594,6 +601,7 @@ export function registerIpc({ app, profilesDir, broadcast = () => {} }) {
       'loop:agents', 'loop:register', 'loop:unregister', 'loop:set-state',
       'loop:messages', 'loop:post', 'loop:inbox',
       'loop:skill', 'loop:set-skill', 'loop:ensure-skill',
+      'loop:skill-status', 'loop:reset-skill', 'loop:has-hook', 'loop:install-hook',
       'loop:bind', 'loop:unbind', 'loop:start', 'loop:stop', 'loop:presence', 'loop:at-prompt',
     ]) ipcMain.removeHandler(channel);
   };

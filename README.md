@@ -68,6 +68,8 @@ ybento leer 42                     # leo el mensaje #42 completo (y quedo en wor
 ybento enviar @opencito "listo"    # le mando un mensaje a otro agente
 ybento enviar @usuario "revisá"    # le aviso al humano
 ybento enviar @opencito --re 7 -f reporte.md   # respondo al #7, texto desde archivo
+ybento preguntar "¿A o B?" --opcion "A" --opcion "B"   # decisión: botones en el chat
+ybento permiso "voy a correr X"   # aviso de permiso: botón para abrir su terminal
 ```
 
 Bento entrega cada mensaje en la terminal del destinatario, **de a uno y
@@ -102,6 +104,12 @@ Lo que el loop resuelve por vos:
 - **Cruces y desfases avisados.** Cada mensaje lleva el commit sobre el que se
   escribió (`[sobre a1b2c3d +cambios sin commitear]`) y se avisa si dos
   agentes se escribieron a la vez o si el árbol ya avanzó.
+- **Decisiones y permisos en el chat.** Cuando un agente necesita que
+  elijas, la pregunta llega como tarjeta con botones (una a la vez por
+  agente) y tu respuesta queda en el hilo. Cuando necesita un permiso en su
+  terminal, el aviso trae un botón que **abre esa terminal en un modal**,
+  sin salir del loop. Para Claude Code, Bento instala un hook que avisa
+  solo (`.claude/settings.local.json`).
 - **El protocolo es un archivo.** `.ybento/loop/skill.md` explica a los
   agentes cómo trabajar; se edita desde el panel.
 - **Un loop por proyecto, o varios en paralelo** (modo configurable en

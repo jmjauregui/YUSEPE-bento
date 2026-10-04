@@ -21,7 +21,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import {
-  findMessage, formatForTerminal, getAgent, inbox, inboxSummary, listAgents, listMessages,
+  findMessage, formatForTerminal, getAgent, inbox, openQuestion, permissionFromHook, inboxSummary, listAgents, listMessages,
   normalizeName, postMessage, setAgentState, STATES,
 } from '../main/loopOps.js';
 
@@ -35,6 +35,9 @@ const HELP = `ybento — mensajería entre terminales del loop de YUSEPE Bento
   ybento bandeja --ultimo          sólo el último
   ybento enviar @nombre "texto"    le mando un mensaje a otro agente
   ybento enviar @usuario "texto"   le aviso al humano
+  ybento preguntar "¿A o B?" --opcion "A" --opcion "B"
+                                   le pido una decisión al usuario (una a la vez)
+  ybento permiso "voy a correr X"  aviso que voy a necesitar un permiso en la terminal
   ybento diag @agente              diagnóstico de la última entrega a ese agente
   ybento diag @agente --payload    igual, más el texto B2 completo para diffear
   ybento diag                      lista los registros de diagnóstico disponibles
@@ -53,6 +56,8 @@ Opciones:
   -f <archivo>    leer el mensaje de un archivo ("-" = stdin)
   --re <n>        este mensaje responde al #n (lo ve el otro al recibirlo)
   --ocupado       al enviar, seguir en working (por defecto pasa a waiting)
+  --opcion <txt>  (preguntar) una opción; repetila para cada una (2 a 6)
+  --hook          (permiso) leer el aviso del hook Notification de Claude Code por stdin
   --payload       (diag) vuelca B2 completo al final
   --json          salida en JSON
   --help          esta ayuda
@@ -96,6 +101,12 @@ export function parseArgs(argv) {
     if (arg === '--json') { flags.json = true; continue; }
     if (arg === '--ultimo' || arg === '--last') { flags.ultimo = true; continue; }
     if (arg === '--payload') { flags.payload = true; continue; }
+    if (arg === '--opcion' || arg === '--option' || arg === '-o') {
+      (flags.opciones ||= []).push(argv[++i]);
+      continue;
+    }
+    if (arg === '--hook') { flags.hook = true; continue; }
+    if (arg === '--hook-inner') { flags.hookInner = true; continue; }
     if (arg === '--help' || arg === '-h' || arg === 'ayuda') { flags.help = true; continue; }
     positional.push(arg);
   }
@@ -141,6 +152,19 @@ export async function run(argv, {
     return flags.help ? 0 : 1;
   }
 
+  // El hook de Claude Code corre `ybento permiso --hook` adentro del agente:
+  // ante cualquier problema (sin workspace, sin identidad, un error) tiene
+  // que salir en silencio y con 0, o le ensucia la pantalla al agente.
+  if (command === 'permiso' && flags.hook) {
+    const quiet = { out: () => {}, err: () => {} };
+    try {
+      await run(argv.filter((a) => a !== '--hook').concat('--hook-inner'), {
+        cwd, env, ...quiet, readStdin, isTTY,
+      });
+    } catch { /* mudo a propósito */ }
+    return 0;
+  }
+
   const root = await findRoot(cwd, env);
   if (!root) {
     return fail('No encontré un workspace de Bento (falta .ybento). '
@@ -150,7 +174,7 @@ export async function run(argv, {
   // La identidad viene del entorno que arma Bento al lanzar la terminal;
   // `--as` es el escape para probar a mano.
   const rawMe = flags.as || env.YBENTO_AGENT;
-  const needsIdentity = ['estado', 'bandeja', 'enviar'].includes(command);
+  const needsIdentity = ['estado', 'bandeja', 'enviar', 'preguntar', 'permiso'].includes(command);
   if (needsIdentity && !rawMe) {
     return fail('No sé quién sos en el loop. Usá --as <nombre> o definí YBENTO_AGENT.');
   }
@@ -293,6 +317,55 @@ export async function run(argv, {
 
         if (flags.json) { json({ ...msg, waiting: freed }); return 0; }
         print(`Enviado ${to(msg.to)}.${freed ? ' Quedaste en waiting.' : ''}`);
+        return 0;
+      }
+
+      case 'preguntar': {
+        // Decisiones (spec 038): la pregunta va al chat del loop como tarjeta
+        // con botones, en vez de quedar escondida en la TUI del agente.
+        const text = rest.join(' ').trim();
+        const opciones = flags.opciones || [];
+        if (!text || opciones.length < 2) {
+          return fail('Uso: ybento preguntar "¿la pregunta?" --opcion "A" --opcion "B" (entre 2 y 6 opciones)');
+        }
+
+        // Una a la vez, impuesto acá y no sólo pedido en la skill: lo que
+        // depende de la memoria del agente falla cuando la sesión se alarga.
+        const abierta = openQuestion(await listMessages(root), me);
+        if (abierta) {
+          return fail(`Ya tenés una pregunta abierta (#${abierta.seq}). `
+            + 'Esperá la respuesta del usuario antes de hacer otra: te llega como un mensaje.');
+        }
+
+        const msg = await postMessage(root, { from: me, to: 'usuario', text, kind: 'question', options: opciones });
+        // Preguntar es terminar el turno: en waiting, la respuesta le puede llegar.
+        try { await setAgentState(root, me, 'waiting'); } catch { /* no registrado */ }
+
+        const seq = (await findMessage(root, msg.id))?.seq;
+        if (flags.json) { json({ ...msg, seq }); return 0; }
+        print(`Pregunta #${seq} enviada al usuario. Quedaste en waiting: `
+          + 'su respuesta te llega como un mensaje que responde a tu pregunta.');
+        return 0;
+      }
+
+      case 'permiso': {
+        // Permisos (spec 038): el diálogo lo contesta el usuario en la
+        // terminal; esto sólo lo avisa en el chat con un botón para abrirla.
+        let text;
+        if (flags.hookInner) {
+          // Desde el hook Notification de Claude Code: mudo ante cualquier
+          // cosa que no sea un pedido de permiso (y nunca falla: un hook que
+          // falla le ensucia la pantalla al agente).
+          text = permissionFromHook(await readStdin());
+          if (!text) return 0;
+        } else {
+          text = rest.join(' ').trim();
+          if (!text) return fail('Uso: ybento permiso "qué vas a ejecutar que pide permiso"');
+        }
+
+        const msg = await postMessage(root, { from: me, to: 'usuario', text, kind: 'permission' });
+        if (flags.json) { json(msg); return 0; }
+        if (!flags.hookInner) print('Aviso enviado: el usuario va a ver un botón para abrir tu terminal.');
         return 0;
       }
 
