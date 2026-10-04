@@ -431,9 +431,17 @@ let renderedSig = null;
 
 const LOOP_MODE_KEY = 'yusepe:loop-mode';
 
+/**
+ * Por defecto, "Loops simultáneos": los agentes de todos los workspaces
+ * abiertos siguen trabajando aunque no los estés mirando (decidido por
+ * Joseph, oct 2026). Con "un loop a la vez" el loop remoto (041) sólo veía
+ * el workspace enfocado y el otro quedaba frenado sin que se notara. Quien
+ * eligió "un loop a la vez" a propósito lo conserva: sólo cambia el default.
+ */
 export function getLoopMode() {
-  const v = localStorage.getItem(LOOP_MODE_KEY);
-  return v === 'multi' ? 'multi' : 'single';
+  let v = null;
+  try { v = localStorage.getItem(LOOP_MODE_KEY); } catch { /* sin storage: default */ }
+  return v === 'single' ? 'single' : 'multi';
 }
 
 export function setLoopMode(mode) {

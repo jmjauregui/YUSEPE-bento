@@ -72,7 +72,7 @@ export function openSettings() {
     };
     const hint = h('div', { class: 'text-[11px] text-fg-subtle leading-relaxed mt-0.5' }, DESCS[getLoopMode()]);
     const control = select(
-      [['single', 'Un loop a la vez'], ['multi', 'Loops simultáneos']],
+      [['multi', 'Loops simultáneos'], ['single', 'Un loop a la vez']],
       getLoopMode(),
       (mode) => { setLoopMode(mode); hint.textContent = DESCS[mode]; },
     );
