@@ -49,3 +49,8 @@ tasks.md
 # Estado local del loop multiagente
 .ybento/
 e2e/failure.png
+
+# Capturas de pantalla que el usuario deja como referencia de un bug.
+# Son de su escritorio y no viajan al repo (decisión 2026-10-04).
+docs/header.png
+docs/msg_terminales.png
