@@ -49,7 +49,7 @@ import { getPanelPosition, panelLayout, expandClip, ALL_POSITION_CLASSES } from 
 import { toast } from './toast.js';
 import { notifyUserMessage } from '../core/loopNotify.js';
 import { createCopyFeedback } from '../core/copyFeedback.js';
-import { pushObserverThreshold } from '../core/observerSettings.js';
+import { getObserverThreshold, pushObserverThreshold, setObserverThreshold } from '../core/observerSettings.js';
 import { activityState } from '../core/loopActivity.js';
 import { agentDotState } from '../core/agentDot.js';
 import { matchMessages, highlightInPlace, initialNavIndex, moveNavIndex, navLabel } from '../core/loopSearch.js';
@@ -436,6 +436,8 @@ let renderedSig = null;
 /* Nodo persistente del selector de designado (036, corrección del desplegable) */
 let rosterListEl = null;         // sub-div que renderRoster vacía y rehace
 let observerSelectEl = null;     // <select> que nunca se destruye
+let thresholdSelectEl = null;    // umbral del vigía, al lado del agente
+let guardEl = null;              // la fila "si el loop se traba…"
 let observerSig = null;          // última firma con la que se dibujaron las opciones
 let pendingObserverUpdate = null; // { sig, agents } esperando a que el select pierda el foco
 
@@ -1309,9 +1311,7 @@ function buildChrome() {
 
   // Sub-nodos persistentes: rosterListEl se vacía en cada poll, observerSelectEl no.
   rosterListEl = h('div', {});
-  observerSelectEl = h('select', {
-    class: 'mt-2 w-full text-[11px] px-2 py-1 rounded-md border border-line bg-bg text-fg-soft cursor-pointer hidden',
-  });
+  observerSelectEl = h('select', { class: 'loop-guard-select' });
   observerSelectEl.addEventListener('change', () => {
     const name = observerSelectEl.value || null;
     observerAgent = name;
@@ -1331,9 +1331,35 @@ function buildChrome() {
       applyObserverOptions(agents, sig);
     }
   });
+  // Vigía del loop (el observador de Fernando, 044). Antes era un selector
+  // suelto, "Avisos a: ninguno", que no decía de qué eran los avisos, parecía
+  // "apagado" con "ninguno" (a vos te avisa igual) y tenía el umbral en otra
+  // pantalla. Ahora es una frase que se lee sola, con el umbral al lado.
+  thresholdSelectEl = h('select', { class: 'loop-guard-select' }, [
+    ['null', 'nunca (apagado)'], ['300', '5 min'], ['600', '10 min'],
+    ['900', '15 min'], ['1800', '30 min'], ['3600', '60 min'],
+  ].map(([v, l]) => h('option', { value: v }, l)));
+  thresholdSelectEl.addEventListener('change', () => {
+    const v = thresholdSelectEl.value;
+    setObserverThreshold(v === 'null' ? null : parseInt(v, 10));
+    paintGuard();
+  });
+  guardEl = h('div', {
+    class: 'loop-guard hidden',
+    title: 'Vigía del loop: si un agente queda trabado (ocupado pero sin imprimir nada) o nadie '
+      + 'retoma un mensaje, Bento te avisa en el chat y, si elegiste un agente, lo despierta '
+      + 'para que siga. Nunca avisa mientras el loop te está esperando a vos.',
+  }, [
+    h('span', { class: 'loop-guard-icon' }, '🛟'),
+    h('div', { class: 'loop-guard-text' }, [
+      h('span', {}, 'Si el loop se traba '), thresholdSelectEl,
+      h('span', {}, ', avisarme a mí y a '), observerSelectEl,
+    ]),
+  ]);
+
   // Avisos del protocolo viejo y del hook (038), arriba de la lista de agentes.
   noticesEl = h('div', { class: 'hidden space-y-1 mb-1.5' });
-  rosterEl.append(noticesEl, rosterListEl, observerSelectEl);
+  rosterEl.append(noticesEl, rosterListEl, guardEl);
 
   // El roster nunca se cierra por un evento — sólo al vencer la cuenta con
   // isHeld() false. mouseleave y focusout sólo rearman a 5 s (release).
@@ -1641,21 +1667,41 @@ function applyObserverOptions(agents, sig) {
   observerSig = sig;
   pendingObserverUpdate = null;
   while (observerSelectEl.firstChild) observerSelectEl.removeChild(observerSelectEl.firstChild);
-  const optNone = h('option', { value: '' }, 'Avisos a: ninguno');
+  const optNone = h('option', { value: '' }, 'nadie más');
   optNone.selected = !observerAgent;
   observerSelectEl.append(optNone);
   for (const a of agents) {
-    const opt = h('option', { value: a.name }, `Avisos a: @${a.name}`);
+    // El que coordina es el candidato natural a "despertar": se marca, pero
+    // no se elige solo (eso mandaría mensajes a un agente sin que lo pidas).
+    const lead = /\b(lead|l[ií]der|coordin)/i.test(a.role || '');
+    const opt = h('option', { value: a.name }, `@${a.name}${lead ? ' · líder' : ''}`);
     if (a.name === observerAgent) opt.selected = true;
     observerSelectEl.append(opt);
   }
-  if (agents.length > 0) observerSelectEl.classList.remove('hidden');
-  else observerSelectEl.classList.add('hidden');
+  // El vigía necesita al menos dos agentes (con uno no hay "pelota caída").
+  guardEl?.classList.toggle('hidden', agents.length < 2);
+  paintGuard();
+}
+
+/** Sincroniza el umbral (puede cambiar desde Configuración) y el estado apagado. */
+function paintGuard() {
+  if (!guardEl || !thresholdSelectEl) return;
+  const ms = getObserverThreshold();
+  const value = ms == null ? 'null' : String(Math.round(ms / 1000));
+  if (thresholdSelectEl !== document.activeElement) {
+    if (![...thresholdSelectEl.options].some((o) => o.value === value)) {
+      thresholdSelectEl.append(h('option', { value }, `${Math.round(ms / 60_000)} min`));
+    }
+    thresholdSelectEl.value = value;
+  }
+  guardEl.classList.toggle('is-off', ms == null);
+  observerSelectEl.disabled = ms == null;
 }
 
 /** Actualiza el selector sólo cuando la firma cambia; aplaza si el select tiene foco. */
 function updateObserverSelect(agents) {
   if (!observerSelectEl) return;
+  paintGuard();
   const sig = observerOptionsSignature(agents, observerAgent);
   if (sig === observerSig) return;
   if (observerSelectEl === document.activeElement) {
@@ -1940,7 +1986,37 @@ function renderStream(messages, agents) {
   if (atBottom) queueMicrotask(() => { streamEl.scrollTop = streamEl.scrollHeight; });
 }
 
+/**
+ * Aviso del vigía (`from: 'bento'`) como tarjeta del sistema, no como una
+ * burbuja más: antes se perdía entre los mensajes de los agentes y no traía
+ * cómo ir a ver qué pasaba. El que va a vos es la tarjeta completa, con un
+ * botón para abrir la terminal de cada agente mencionado; el que va al
+ * agente que se despierta es una línea chica (ya está la tarjeta).
+ */
+function systemRow(msg) {
+  const text = String(msg.text).replace(/\s*\(Aviso automático de Bento[^)]*\)\s*$/, '');
+  const about = [...new Set([...text.matchAll(/@([a-z0-9][a-z0-9_-]*)/gi)].map((m) => m[1].toLowerCase()))]
+    .filter((n) => agentsByName[n]?.tileId).slice(0, 3);
+  const attrs = { class: 'loop-row flex justify-center', 'data-id': msg.id, 'data-to': msg.to };
+
+  if (msg.to !== 'usuario') {
+    return h('div', attrs, h('div', { class: 'loop-system-line' },
+      `🛟 Bento le avisó a @${msg.to} que el loop se trabó · ${formatTime(msg.createdAt)}`));
+  }
+  return h('div', attrs, h('div', { class: 'loop-system' }, [
+    h('div', { class: 'loop-system-head' }, [
+      h('span', {}, '🛟 Vigía del loop'),
+      h('span', { class: 'text-fg-subtle/70' }, formatTime(msg.createdAt)),
+    ]),
+    h('div', { class: 'loop-system-text' }, text),
+    ...(about.length ? [h('div', { class: 'flex flex-wrap gap-1.5 mt-1.5' }, about.map((name) =>
+      h('button', { class: 'loop-perm-open', onClick: () => peekAgent(name) },
+        [svgIcon('terminal', { size: 12 }), h('span', {}, `Abrir terminal de @${name}`)])))] : []),
+  ]));
+}
+
 function messageRow(msg, colors = {}, query = '') {
+  if (msg.from === 'bento') return systemRow(msg);
   const mine = msg.from === 'usuario';
   const forMe = msg.to === 'usuario';
 

@@ -139,8 +139,8 @@ export function openSettings() {
       setObserverThreshold(val === 'null' ? null : parseInt(val, 10));
     });
 
-    return row('Observador del loop',
-      'Avisa si el loop lleva este tiempo sin actividad visible en alguna terminal.',
+    return row('Vigía del loop',
+      'Si un agente queda trabado o nadie retoma, te avisa en el chat (y despierta al agente que elijas en el panel del loop).',
       [control]);
   }
 

@@ -1005,6 +1005,50 @@
   /* El botón del teléfono en el encabezado sólo hace falta en el panel lateral. */
   #loop-sidebar.is-expanded .loop-phone-btn { display: none; }
 
+  /* ---- Vigía del loop (observador, 044) ---- */
+  .loop-guard {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+    padding: 0.45rem 0.55rem;
+    border-radius: 8px;
+    border: 1px solid var(--color-line);
+    background: var(--color-bg-elev);
+    font-size: 11px;
+    line-height: 1.9;
+    color: var(--color-fg-soft);
+    cursor: help;
+  }
+  .loop-guard.hidden { display: none; }
+  .loop-guard-icon { font-size: 13px; line-height: 1.6; }
+  .loop-guard-text { flex: 1; min-width: 0; }
+  .loop-guard-select {
+    font-size: 11px;
+    padding: 0 0.3rem;
+    margin: 0 0.1rem;
+    border-radius: 5px;
+    border: 1px solid var(--color-line);
+    background: var(--color-bg);
+    color: var(--color-fg);
+    cursor: pointer;
+  }
+  .loop-guard.is-off { opacity: 0.6; }
+  .loop-guard-select:disabled { opacity: 0.5; cursor: default; }
+
+  /* ---- Avisos del vigía en el hilo: tarjeta del sistema ---- */
+  .loop-system {
+    width: min(92%, 34rem);
+    padding: 0.55rem 0.75rem;
+    border-radius: 10px;
+    border: 1px dashed rgb(251 191 36 / 0.55);
+    background: rgb(251 191 36 / 0.07);
+    font-size: 12px;
+  }
+  .loop-system-head { display: flex; justify-content: space-between; gap: 0.5rem; font-size: 10.5px; font-weight: 600; color: rgb(251 191 36); margin-bottom: 0.2rem; }
+  .loop-system-text { color: var(--color-fg); line-height: 1.45; }
+  .loop-system-line { font-size: 10.5px; color: var(--color-fg-subtle); padding: 0.1rem 0; }
+
   /* ---- Avatar del agente en el hilo (sólo en el loop expandido) ---- */
   .loop-avatar { display: none; }
   #loop-sidebar.is-expanded .loop-avatar {
