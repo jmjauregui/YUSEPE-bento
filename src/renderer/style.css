@@ -817,6 +817,31 @@
     .loop-rec, .loop-rec-mic, .loop-rec-status { animation: none !important; }
   }
 
+  /* ---- Loop en el teléfono (spec 041) ---- */
+  .loop-remote-block { margin-top: 0.5rem; }
+  .loop-remote-start {
+    width: 100%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    font-size: 12px;
+    padding: 0.5rem;
+    border-radius: 8px;
+    border: 1px dashed var(--color-line);
+    color: var(--color-fg-soft);
+    transition: background 0.12s, border-color 0.12s;
+  }
+  .loop-remote-start:hover { background: var(--color-bg-elev); border-color: rgb(var(--color-accent-rgb) / 0.5); }
+  .loop-remote { display: flex; gap: 0.6rem; align-items: flex-start; padding: 0.5rem; border-radius: 10px; background: var(--color-bg-elev); border: 1px solid var(--color-line); }
+  .loop-remote-qr { width: 112px; height: 112px; flex-shrink: 0; border-radius: 6px; background: #fff; padding: 4px; image-rendering: pixelated; }
+  .loop-remote-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.15rem; }
+  .loop-remote-device { display: flex; align-items: center; gap: 0.35rem; font-size: 10px; color: var(--color-fg-muted); }
+  .loop-remote-stop { align-self: flex-start; margin-top: 0.35rem; font-size: 10.5px; padding: 0.2rem 0.55rem; border-radius: 6px; border: 1px solid var(--color-line); color: var(--color-fg-soft); }
+  .loop-remote-stop:hover { border-color: rgb(239 68 68 / 0.6); color: rgb(248 113 113); }
+  /* El botón del teléfono en el encabezado sólo hace falta en el panel lateral. */
+  #loop-sidebar.is-expanded .loop-phone-btn { display: none; }
+
   /* ---- Avatar del agente en el hilo (sólo en el loop expandido) ---- */
   .loop-avatar { display: none; }
   #loop-sidebar.is-expanded .loop-avatar {

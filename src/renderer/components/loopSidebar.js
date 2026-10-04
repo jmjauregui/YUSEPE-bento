@@ -36,6 +36,7 @@ import { thinkingPhrase, workingFor } from '../core/loopThinking.js';
 import { openTerminalPeek } from './terminalPeek.js';
 import { cancelRecording, currentLevel, currentModel, startRecording, stopAndTranscribe } from '../core/dictation.js';
 import { insertAtCursor } from '../core/dictationText.js';
+import QRCode from 'qrcode';
 import { renderMarkdown } from '../core/markdown.js';
 import {
   badgeLabel, cursorAtEnd, ensureCursor, saveCursor, unreadSummary,
@@ -238,6 +239,100 @@ function permissionControls(msg, dismissed) {
   ]);
 }
 
+/* ---------- Loop remoto en la red local (spec 041) ---------- */
+
+let remoteState = { running: false, url: null, devices: [] };
+const remoteBlocks = new Set(); // contenedores donde se pinta (columna expandida, modal)
+
+/** "iPhone · Safari" a partir del user agent, para el aviso de aprobación. */
+function describeDevice(ua = '') {
+  const device = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android'
+    : /Mac/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : /Linux/.test(ua) ? 'Linux' : 'Dispositivo';
+  const browser = /EdgA?\//.test(ua) ? 'Edge' : /CriOS|Chrome\//.test(ua) ? 'Chrome' : /FxiOS|Firefox\//.test(ua) ? 'Firefox'
+    : /Safari\//.test(ua) ? 'Safari' : 'navegador';
+  return `${device} · ${browser}`;
+}
+
+async function startRemote() {
+  try {
+    remoteState = await window.yusepe.remote.start(cwd());
+  } catch (err) {
+    toast.error(String(err?.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''));
+  }
+  paintRemote();
+}
+
+async function paintRemote() {
+  for (const box of remoteBlocks) {
+    if (!box.isConnected) { remoteBlocks.delete(box); continue; }
+    box.replaceChildren(...(await remoteContent()));
+  }
+}
+
+async function remoteContent() {
+  if (!remoteState.running) {
+    return [h('button', {
+      class: 'loop-remote-start',
+      title: 'Abrí este chat en tu teléfono, sólo en esta red WiFi',
+      onClick: startRemote,
+    }, [svgIcon('phone', { size: 14 }), h('span', {}, 'Abrir en el teléfono')])];
+  }
+  // El QR es nuestro (sale de la URL del servidor): se usa como imagen, no como HTML.
+  const svg = await QRCode.toString(remoteState.url, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' });
+  const devices = remoteState.devices || [];
+  return [
+    h('div', { class: 'loop-remote' }, [
+      h('img', { class: 'loop-remote-qr', alt: 'Código QR para abrir el loop en el teléfono',
+        src: `data:image/svg+xml;utf8,${encodeURIComponent(svg)}` }),
+      h('div', { class: 'loop-remote-info' }, [
+        h('div', { class: 'text-xs text-fg font-medium' }, 'En el teléfono'),
+        h('div', { class: 'text-[10px] text-fg-subtle leading-relaxed' },
+          'Escaneá con la cámara. Sólo funciona en esta red. Sin cifrado: usalo sólo en redes de confianza.'),
+        h('div', { class: 'text-[10px] text-fg-muted mt-1' },
+          devices.length ? `${devices.length} conectado${devices.length === 1 ? '' : 's'}` : 'Nadie conectado todavía'),
+        ...devices.map((d) => h('div', { class: 'loop-remote-device' }, [
+          h('span', { class: `w-1.5 h-1.5 rounded-full ${d.live ? 'bg-emerald-400' : 'bg-fg-subtle/40'}` }),
+          h('span', { class: 'truncate flex-1' }, `${describeDevice(d.ua)} · ${d.ip}`),
+          h('button', {
+            class: 'text-fg-subtle hover:text-red-400',
+            title: 'Desconectar este dispositivo',
+            onClick: async () => { remoteState = await window.yusepe.remote.kick(d.id); paintRemote(); },
+          }, svgIcon('close', { size: 11 })),
+        ])),
+        h('button', {
+          class: 'loop-remote-stop',
+          onClick: async () => { remoteState = await window.yusepe.remote.stop(); paintRemote(); },
+        }, 'Apagar'),
+      ]),
+    ]),
+  ];
+}
+
+/** Sección "En el teléfono": se registra para repintarse con cada cambio de estado. */
+function remoteBlock() {
+  const box = h('div', { class: 'loop-remote-block' });
+  remoteBlocks.add(box);
+  queueMicrotask(paintRemote);
+  return box;
+}
+
+function initRemote() {
+  window.yusepe.remote.onStatus((st) => { remoteState = st; paintRemote(); });
+  // Cada dispositivo nuevo se aprueba acá: hasta entonces no ve ni manda nada.
+  window.yusepe.remote.onPairRequest(async ({ requestId, ua, ip }) => {
+    const ok = await confirmModal({
+      title: 'Un dispositivo quiere conectarse al loop',
+      body: `${describeDevice(ua)} · ${ip}. Si lo aprobás, va a poder leer el chat y escribirles a los agentes `
+        + '(que ejecutan comandos en esta máquina). Aprobalo sólo si es tuyo.',
+      confirmLabel: 'Permitir',
+      cancelLabel: 'Rechazar',
+    });
+    window.yusepe.remote.answerPair(requestId, ok);
+    if (ok) toast.success('Dispositivo conectado al loop.');
+  });
+  window.yusepe.remote.status().then((st) => { remoteState = st; paintRemote(); }).catch(() => {});
+}
+
 /* ---------- Avisos del panel: protocolo viejo y hook de permisos ---------- */
 
 let noticesEl = null;
@@ -401,6 +496,7 @@ export function initLoopSidebar() {
 
   applySavedWidth(panelEl, WIDTH_OPTS);
   buildChrome();
+  initRemote();
 
   // El repartidor vive en main y vigila el disco: se arranca al entrar a un
   // workspace y se corta al salir, tenga o no el panel abierto — el loop
@@ -858,9 +954,17 @@ function buildChrome() {
     onClick: () => setExpanded(!isExpanded),
   }, [svgIcon('external', { size: 11 }), h('span', {}, 'Expandir')]);
 
+  // En el panel lateral no hay columna izquierda: el QR va en un modal.
+  const phoneBtn = h('button', {
+    class: 'loop-phone-btn inline-flex items-center justify-center text-fg-muted hover:text-fg px-1 shrink-0',
+    title: 'Abrir este chat en el teléfono (red local)',
+    onClick: () => openModal({ title: 'Loop en el teléfono', body: remoteBlock(), size: 'sm' }),
+  }, svgIcon('phone', { size: 14 }));
+
   const header = h('div', { class: 'loop-header flex items-center gap-1.5 px-2 py-1.5 border-b border-line shrink-0' }, [
     title,
     expandBtn,
+    phoneBtn,
     markReadBtn,
     h('button', {
       class: 'inline-flex items-center justify-center text-fg-muted hover:text-fg px-1 shrink-0',
@@ -887,6 +991,7 @@ function buildChrome() {
   const leftEl = h('div', { class: 'loop-left flex-col min-h-0 px-2 py-2' }, [
     h('div', { class: 'loop-col-title' }, 'Terminales y documentos'),
     tilesListEl,
+    remoteBlock(),
     h('button', {
       class: 'mt-2 w-full text-xs font-medium text-white py-2 rounded-md bg-red-600 hover:bg-red-700 transition',
       onClick: closeSidebar,

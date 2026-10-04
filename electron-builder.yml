@@ -30,6 +30,9 @@ extraResources:
       - cli/**/*.{js,mjs}
       - '!cli/**/*.test.js'
       - main/loopOps.js
+  # Página del loop remoto (spec 041): la sirve el proceso main al teléfono.
+  - from: src/remote
+    to: remote
 
 mac:
   category: public.app-category.productivity

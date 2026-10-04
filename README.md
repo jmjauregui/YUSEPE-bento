@@ -114,6 +114,11 @@ Lo que el loop resuelve por vos:
   Whisper corriendo **en tu máquina** (Mac, Windows y Linux): el audio no
   sale de la computadora. La primera vez descarga el modelo (~80 MB). El
   texto queda en la caja para revisar; nunca se envía solo.
+- **El loop en tu teléfono.** "Abrir en el teléfono" muestra un QR: lo
+  escaneás y seguís todos tus loops activos desde el celular —leer, escribir
+  y contestar decisiones con un toque—. Sólo en tu red local, apagado por
+  defecto, con una llave secreta en el QR y aprobación de cada dispositivo
+  en la compu. Sin cifrado: usalo en redes de confianza.
 - **El protocolo es un archivo.** `.ybento/loop/skill.md` explica a los
   agentes cómo trabajar; se edita desde el panel.
 - **Un loop por proyecto, o varios en paralelo** (modo configurable en

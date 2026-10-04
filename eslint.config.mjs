@@ -51,7 +51,7 @@ export default [
   // `docs/` es el sitio estático de GitHub Pages — módulos ES que corren
   // directo en el navegador, sin bundler, así que van con el mismo entorno.
   {
-    files: ['src/renderer/**/*.js', 'docs/**/*.js'],
+    files: ['src/renderer/**/*.js', 'src/remote/**/*.js', 'docs/**/*.js'],
     languageOptions: {
       globals: { ...globals.browser },
     },

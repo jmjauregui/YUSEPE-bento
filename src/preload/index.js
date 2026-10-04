@@ -214,6 +214,17 @@ contextBridge.exposeInMainWorld('yusepe', {
     writeText: (text) => ipcRenderer.invoke('clipboard:write-text', { text }),
   },
 
+  // Loop remoto en la red local (spec 041).
+  remote: {
+    start: (cwd) => ipcRenderer.invoke('remote:start', { cwd }),
+    stop: () => ipcRenderer.invoke('remote:stop'),
+    status: () => ipcRenderer.invoke('remote:status'),
+    kick: (id) => ipcRenderer.invoke('remote:kick', { id }),
+    answerPair: (requestId, ok) => ipcRenderer.invoke('remote:pair-answer', { requestId, ok }),
+    onPairRequest: (handler) => on('remote:pair-request', handler),
+    onStatus: (handler) => on('remote:status', handler),
+  },
+
   menu: {
     // Abre un menú contextual nativo y resuelve con el id elegido (o null).
     popup: (items) => ipcRenderer.invoke('menu:popup', { items }),

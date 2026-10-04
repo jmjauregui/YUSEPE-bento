@@ -19,6 +19,7 @@ import * as tasksOps from './tasksOps.js';
 import * as pexelsOps from './pexelsOps.js';
 import * as loopOps from './loopOps.js';
 import { bracketedPasteState, createDispatcher, looksLikeShell } from './loopDispatcher.js';
+import { createRemoteServer } from './remoteServer.js';
 import { buildPtyEnv, ensureShim } from './loopShim.js';
 import { createWriteQueue } from './ptyWriteQueue.js';
 import { SnippetsStore } from './snippetsOps.js';
@@ -438,6 +439,10 @@ export function registerIpc({ app, profilesDir, broadcast = () => {} }) {
     if (loopSender && !loopSender.isDestroyed()) loopSender.send(channel, payload);
   };
 
+  // Loop remoto en la red local (spec 041). Se crea más abajo; el repartidor
+  // le avisa cambios por estas closures.
+  let remote = null;
+
   const dispatcher = createDispatcher({
     // Por la misma cola que el resto: el orden FIFO por pty garantiza que
     // el `\r` que el dispatcher manda aparte salga después del mensaje.
@@ -457,8 +462,60 @@ export function registerIpc({ app, profilesDir, broadcast = () => {} }) {
     },
     isBracketedPaste: (ptyId) => !!ptys.get(ptyId)?.bracketed,
     onDelivered: (info) => notifyLoop('loop:delivered', info),
-    onChange: () => notifyLoop('loop:changed', {}),
+    onChange: (cwd) => {
+      notifyLoop('loop:changed', {});
+      remote?.notifyChange(cwd);
+    },
+    onLoopsChanged: () => remote?.notifyLoopsChanged(),
     onPresence: (info) => notifyLoop('loop:presence', info),
+  });
+
+  /* ---------- Loop remoto en la red local (spec 041) ---------- */
+
+  // La ventana que lo prendió: ahí van el pedido de aprobación y el estado.
+  let remoteSender = null;
+  const pairWaits = new Map(); // requestId -> resolve(bool)
+  const notifyRemote = (channel, payload) => {
+    if (remoteSender && !remoteSender.isDestroyed()) remoteSender.send(channel, payload);
+  };
+
+  remote = createRemoteServer({
+    // Los loops corriendo (los del repartidor), con el nombre de sus perfiles.
+    activeWorkspaces: async () => {
+      const profiles = await storage.list();
+      return dispatcher.activeCwds().map((cwd) => ({
+        cwd,
+        // Varios perfiles pueden compartir carpeta (y por lo tanto loop).
+        name: profiles.filter((p) => p.cwd === cwd).map((p) => p.name).join(' · ') || 'Workspace',
+      }));
+    },
+    presence: (cwd) => dispatcher.presence(cwd),
+    onPairRequest: ({ ua, ip }) => new Promise((resolve) => {
+      if (!remoteSender || remoteSender.isDestroyed()) { resolve(false); return; }
+      const requestId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+      pairWaits.set(requestId, resolve);
+      notifyRemote('remote:pair-request', { requestId, ua, ip });
+    }),
+    onStatus: (st) => notifyRemote('remote:status', st),
+    // Empaquetada, la página va en resources/remote (extraResources).
+    staticDir: app.isPackaged ? join(process.resourcesPath, 'remote') : join(app.getAppPath(), 'src', 'remote'),
+  });
+
+  ipcMain.handle('remote:start', async (event, { cwd } = {}) => {
+    remoteSender = event.sender;
+    return remote.start({ initialCwd: cwd || null });
+  });
+  ipcMain.handle('remote:stop', () => remote.stop());
+  ipcMain.handle('remote:status', (event) => {
+    if (remote.status().running) remoteSender = event.sender;
+    return remote.status();
+  });
+  ipcMain.handle('remote:kick', (_e, { id }) => remote.kick(id));
+  ipcMain.handle('remote:pair-answer', (_e, { requestId, ok }) => {
+    const resolve = pairWaits.get(requestId);
+    pairWaits.delete(requestId);
+    resolve?.(!!ok);
+    return true;
   });
 
   ipcMain.handle('loop:agents', (_e, { cwd }) => loopOps.listAgents(cwd));
@@ -524,6 +581,8 @@ export function registerIpc({ app, profilesDir, broadcast = () => {} }) {
     // reparto en curso, pero acá estamos cerrando la app y las escrituras
     // de status.json son atómicas (tmp + rename), así que no hay a medias.
     dispatcher.dispose();
+    remote?.stop();
+    for (const resolve of pairWaits.values()) resolve(false);
     for (const { proc } of ptys.values()) {
       try { proc.kill(); } catch { /* noop */ }
     }
@@ -602,6 +661,7 @@ export function registerIpc({ app, profilesDir, broadcast = () => {} }) {
       'loop:messages', 'loop:post', 'loop:inbox',
       'loop:skill', 'loop:set-skill', 'loop:ensure-skill',
       'loop:skill-status', 'loop:reset-skill', 'loop:has-hook', 'loop:install-hook',
+      'remote:start', 'remote:stop', 'remote:status', 'remote:kick', 'remote:pair-answer',
       'loop:bind', 'loop:unbind', 'loop:start', 'loop:stop', 'loop:presence', 'loop:at-prompt',
     ]) ipcMain.removeHandler(channel);
   };

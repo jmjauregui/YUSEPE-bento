@@ -144,7 +144,10 @@ export function createDispatcher({
   // ¿El programa del pty pidió bracketed paste? (ver bracketedPasteState)
   isBracketedPaste = () => false,
   onDelivered = () => {},
+  // Recibe el cwd que cambió (o que se revisó en el poll de respaldo).
   onChange = () => {},
+  // Se abrió o se cerró el loop de algún workspace (start/stop).
+  onLoopsChanged = () => {},
   onPresence = () => {},
   submitDelayMs = SUBMIT_DELAY_MS,
   idleTimeoutMs = IDLE_TIMEOUT_MS,
@@ -370,7 +373,7 @@ export function createDispatcher({
     if (state.debounce) clearTimeout(state.debounce);
     state.debounce = setTimeout(() => {
       state.debounce = null;
-      onChange();
+      onChange(targetCwd);
       tickFor(targetCwd);
     }, DEBOUNCE_MS);
   }
@@ -407,11 +410,12 @@ export function createDispatcher({
       // `fs.watch` puede perder eventos en Windows (Explorer, Search Indexer,
       // antivirus). `onChange` acá garantiza que la sidebar se refresca aunque
       // watchLoop no haya avisado — mismo intervalo que el tick, sin coste extra.
-      onChange();
+      onChange(nextCwd);
       tickFor(nextCwd);
     }, pollMs);
 
     if (watchFs) scheduleFor(nextCwd);
+    onLoopsChanged();
   }
 
   /**
@@ -430,6 +434,7 @@ export function createDispatcher({
       if (state.unwatch) { try { state.unwatch(); } catch { /* noop */ } state.unwatch = null; }
       cwds.delete(c);
     }
+    if (toStop.length) onLoopsChanged();
   }
 
   /**
@@ -453,5 +458,7 @@ export function createDispatcher({
   return {
     bind, unbind, boundAgents, tick, start, stop, dispose,
     presence: presenceSnapshot,
+    /** Workspaces con el loop corriendo (los que reparte). */
+    activeCwds: () => [...cwds.keys()],
   };
 }
