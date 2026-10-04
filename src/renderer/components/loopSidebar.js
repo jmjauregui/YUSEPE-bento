@@ -34,6 +34,8 @@ import { pickTerminal } from './terminalPicker.js';
 import { labelFor } from './workspaceManager.js';
 import { thinkingPhrase, workingFor } from '../core/loopThinking.js';
 import { openTerminalPeek } from './terminalPeek.js';
+import { cancelRecording, currentLevel, currentModel, startRecording, stopAndTranscribe } from '../core/dictation.js';
+import { insertAtCursor } from '../core/dictationText.js';
 import { renderMarkdown } from '../core/markdown.js';
 import {
   badgeLabel, cursorAtEnd, ensureCursor, saveCursor, unreadSummary,
@@ -564,6 +566,8 @@ function closeSidebar() {
   if (!panelEl) return;
   if (isExpanded) setExpanded(false, { animate: false });
   renderThinking([], {});
+  // Cerrar el panel corta una grabación en curso: el micrófono no queda abierto.
+  cancelRecording();
   isOpen = false;
   document.getElementById('btn-toggle-loop')?.classList.remove('is-active');
   persistOpenState(state.profile?.id, false);
@@ -1372,12 +1376,174 @@ function ensureComposerBox() {
   const paintSend = () => composerSendBtn.classList.toggle('is-ready', !!composerInput.value.trim());
   composerInput.addEventListener('input', paintSend);
 
+  // Dictado por voz (spec 040): graba, transcribe local y deja el texto en
+  // el cursor. Nunca envía solo: el agente recibe lo que el usuario revisó.
+  //
+  // Mientras graba, la caja se convierte en un panel con la onda de TU voz
+  // en vivo (nivel real del micrófono, ver dictation.currentLevel), un
+  // cronómetro, ✕ para descartar y ✓ para transcribir.
+  const HINT = 'Enter envía · Shift+Enter, nueva línea · 🎤 dictar';
+  const hintEl = h('p', { class: 'text-[10px] text-fg-subtle/70 text-center mt-1.5' }, HINT);
+  const micBtn = h('button', { class: 'loop-mic shrink-0', title: 'Dictar' }, svgIcon('mic', { size: 15 }));
+
+  const waveCanvas = h('canvas', { class: 'loop-rec-wave' });
+  const timerEl = h('span', { class: 'loop-rec-timer' }, '0:00');
+  const statusEl = h('span', { class: 'loop-rec-status' }, '');
+  const recPanel = h('div', { class: 'loop-rec hidden', 'aria-live': 'polite' }, [
+    h('span', { class: 'loop-rec-mic' }, svgIcon('mic', { size: 18 })),
+    waveCanvas,
+    h('div', { class: 'loop-rec-side' }, [timerEl, statusEl]),
+    h('button', { class: 'loop-rec-btn', title: 'Descartar', onClick: () => cancelDictation() }, svgIcon('close', { size: 14 })),
+    h('button', { class: 'loop-rec-btn is-ok', title: 'Listo: transcribir', onClick: () => finishDictation() },
+      svgIcon('check', { size: 15 })),
+  ]);
+
+  // Historial de niveles: las barras entran por la derecha y se corren a la
+  // izquierda, como una nota de voz.
+  let levels = [];
+  let raf = null;
+  let startedAt = 0;
+  let frozen = false;
+  const BAR = 3;
+  const GAP = 3;
+  // Una barra nueva cada SAMPLE_MS (no una por cuadro: a 60 fps la onda
+  // corría ~360 px/s). Cada barra es el pico de voz de su intervalo, así
+  // no se pierden sílabas por samplear más espaciado.
+  const SAMPLE_MS = 90;
+  let lastSample = 0;
+  let peak = 0;
+  function drawWave() {
+    const dpr = window.devicePixelRatio || 1;
+    const w = waveCanvas.clientWidth;
+    const hgt = waveCanvas.clientHeight;
+    if (waveCanvas.width !== Math.round(w * dpr)) {
+      waveCanvas.width = Math.round(w * dpr);
+      waveCanvas.height = Math.round(hgt * dpr);
+    }
+    const ctx = waveCanvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, hgt);
+    const n = Math.floor(w / (BAR + GAP));
+    if (!frozen) {
+      peak = Math.max(peak, currentLevel());
+      const now = performance.now();
+      if (now - lastSample >= SAMPLE_MS) {
+        levels.push(peak);
+        peak = 0;
+        lastSample = now;
+        if (levels.length > n) levels = levels.slice(-n);
+      }
+    }
+    const mid = hgt / 2;
+    for (let i = 0; i < levels.length; i++) {
+      const lvl = levels[levels.length - 1 - i];
+      const bh = Math.max(3, Math.min(hgt, lvl * hgt * 1.15));
+      const x = w - (i + 1) * (BAR + GAP);
+      // Las barras más viejas se desvanecen hacia la izquierda.
+      ctx.globalAlpha = (frozen ? 0.35 : 0.95) * (0.35 + 0.65 * (1 - i / n));
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.roundRect(x, mid - bh / 2, BAR, bh, BAR / 2);
+      ctx.fill();
+    }
+    const secs = Math.floor((Date.now() - startedAt) / 1000);
+    if (!frozen) timerEl.textContent = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+    raf = requestAnimationFrame(drawWave);
+  }
+
+  function showRecPanel(stateName) {
+    recPanel.classList.remove('hidden');
+    recPanel.dataset.state = stateName;
+    micBtn.dataset.state = stateName;
+  }
+  function hideRecPanel() {
+    cancelAnimationFrame(raf);
+    raf = null;
+    recPanel.classList.add('hidden');
+    micBtn.dataset.state = 'idle';
+    hintEl.textContent = HINT;
+  }
+
+  async function beginDictation() {
+    const model = currentModel();
+    if (!model.downloaded) {
+      const ok = await confirmModal({
+        title: 'Dictado por voz',
+        body: `La primera vez se descarga el modelo de voz (~${model.sizeMb} MB, calidad "${model.label}"). `
+          + 'Después funciona sin internet y el audio nunca sale de tu máquina.',
+        confirmLabel: 'Descargar y dictar',
+      });
+      if (!ok) return;
+    }
+    try {
+      await startRecording();
+    } catch (err) {
+      toast.error(err?.message || String(err));
+      return;
+    }
+    levels = [];
+    frozen = false;
+    peak = 0;
+    lastSample = 0;
+    startedAt = Date.now();
+    statusEl.textContent = 'Escuchando…';
+    showRecPanel('recording');
+    hintEl.textContent = '✓ o 🎤 para transcribir · ✕ descarta';
+    drawWave();
+  }
+
+  function cancelDictation() {
+    cancelRecording();
+    hideRecPanel();
+    composerInput.focus();
+  }
+
+  async function finishDictation() {
+    if (micBtn.dataset.state !== 'recording') return;
+    frozen = true;
+    statusEl.textContent = 'Transcribiendo…';
+    showRecPanel('busy');
+    try {
+      const text = await stopAndTranscribe({
+        onProgress: ({ loaded, total }) => {
+          if (total) statusEl.textContent = `Bajando el modelo… ${Math.round((loaded / total) * 100)}%`;
+        },
+      });
+      if (text) {
+        const { value, caret } = insertAtCursor(composerInput.value,
+          composerInput.selectionStart ?? composerInput.value.length,
+          composerInput.selectionEnd ?? composerInput.value.length, text);
+        composerInput.value = value;
+        composerInput.focus();
+        composerInput.setSelectionRange(caret, caret);
+        // Mismo camino que tipear: ajusta el alto y enciende el botón de enviar.
+        composerInput.dispatchEvent(new Event('input'));
+      } else {
+        toast.info('No escuché nada para transcribir.');
+      }
+    } catch (err) {
+      toast.error(err?.message || String(err));
+    } finally {
+      hideRecPanel();
+    }
+  }
+
+  micBtn.addEventListener('click', () => {
+    const st = micBtn.dataset.state;
+    if (st === 'busy') return;
+    if (st === 'recording') finishDictation();
+    else beginDictation();
+  });
+  // Esc mientras graba descarta (el foco no está en la terminal acá).
+  recPanel.addEventListener('keydown', (e) => { if (e.key === 'Escape') cancelDictation(); });
+  micBtn.dataset.state = 'idle';
+
   const toolbar = h('div', { class: 'flex items-end justify-between gap-2 mt-1.5' }, [
-    pillsContainerEl, composerSendBtn,
+    pillsContainerEl, h('div', { class: 'flex items-center gap-1.5 shrink-0' }, [micBtn, composerSendBtn]),
   ]);
   composerBoxEl = h('div', {}, [
-    h('div', { class: 'loop-input' }, [composerInput, toolbar]),
-    h('p', { class: 'text-[10px] text-fg-subtle/70 text-center mt-1.5' }, 'Enter envía · Shift+Enter, nueva línea'),
+    h('div', { class: 'loop-input' }, [composerInput, toolbar, recPanel]),
+    hintEl,
   ]);
   composerEl.append(composerBoxEl);
 

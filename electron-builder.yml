@@ -42,6 +42,11 @@ mac:
   identity: null
   hardenedRuntime: false
   gatekeeperAssess: false
+  # Texto del permiso de micrófono de macOS (dictado del loop, spec 040, y
+  # llamadas en webviews). Sin esto se ve el genérico de Electron en inglés.
+  extendInfo:
+    NSMicrophoneUsageDescription: Bento usa el micrófono para dictarle prompts a los agentes y para las llamadas en tus apps web. El audio del dictado no sale de tu máquina.
+    NSCameraUsageDescription: Bento usa la cámara sólo para las videollamadas de tus apps web.
 
 win:
   target:

@@ -12,6 +12,8 @@ import { getTheme, applyTheme } from '../core/theme.js';
 import { buildWallpaperSection } from './wallpaperPicker.js';
 import { SOUNDS, getSound, setSound, playSound } from '../core/loopNotify.js';
 import { getLoopMode, setLoopMode, getLoopOpenView, setLoopOpenView } from './loopSidebar.js';
+import { getDictationLanguage, setDictationLanguage, getDictationQuality, setDictationQuality } from '../core/dictation.js';
+import { DICTATION_LANGUAGES, DICTATION_MODELS } from '../core/dictationText.js';
 import { autoArrangeTiles } from './bentoGrid.js';
 import { state } from '../core/state.js';
 import { toast } from './toast.js';
@@ -86,6 +88,17 @@ export function openSettings() {
     return row('Abrir el loop de agentes', 'Cómo aparece al abrirlo. Siempre podés cambiar con Expandir / Contraer.', [control]);
   }
 
+  function dictationRows() {
+    const lang = select(Object.entries(DICTATION_LANGUAGES).map(([k, v]) => [k, v.label]),
+      getDictationLanguage(), setDictationLanguage);
+    const quality = select(Object.entries(DICTATION_MODELS).map(([k, v]) => [k, `${v.label} (~${v.sizeMb} MB)`]),
+      getDictationQuality(), setDictationQuality);
+    return [
+      row('Idioma del dictado', 'El 🎤 de la caja del loop. Todo corre en tu máquina.', [lang]),
+      row('Calidad del dictado', '"Preciso" entiende mejor la jerga técnica, pero descarga más y tarda más.', [quality]),
+    ];
+  }
+
   function soundRow() {
     const preview = h('button', {
       class: 'inline-flex items-center justify-center w-7 h-7 rounded-md border border-line text-[10px] '
@@ -120,7 +133,7 @@ export function openSettings() {
   }
 
   const body = h('div', {}, [
-    group('General', [themeRow, loopModeRow(), openViewRow(), soundRow()]),
+    group('General', [themeRow, loopModeRow(), openViewRow(), soundRow(), ...dictationRows()]),
     state.profile
       ? group('Este espacio', [
         arrangeRow(),

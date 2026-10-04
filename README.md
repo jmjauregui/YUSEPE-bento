@@ -110,6 +110,10 @@ Lo que el loop resuelve por vos:
   terminal, el aviso trae un botón que **abre esa terminal en un modal**,
   sin salir del loop. Para Claude Code, Bento instala un hook que avisa
   solo (`.claude/settings.local.json`).
+- **Dictado por voz.** El 🎤 de la caja del loop transcribe tu prompt con
+  Whisper corriendo **en tu máquina** (Mac, Windows y Linux): el audio no
+  sale de la computadora. La primera vez descarga el modelo (~80 MB). El
+  texto queda en la caja para revisar; nunca se envía solo.
 - **El protocolo es un archivo.** `.ybento/loop/skill.md` explica a los
   agentes cómo trabajar; se edita desde el panel.
 - **Un loop por proyecto, o varios en paralelo** (modo configurable en

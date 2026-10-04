@@ -580,6 +580,7 @@
 
   /* ---- Caja de mensaje del loop (estilo input de Claude) ---- */
   .loop-input {
+    min-height: 74px;
     background: var(--color-bg-elev);
     border: 1px solid var(--color-line);
     border-radius: 16px;
@@ -730,6 +731,91 @@
     grid-area: auto;
   }
   .tile.is-peeked [class^='tile-handle'] { display: none; }
+
+  /* ---- Botón de dictado (spec 040) ---- */
+  .loop-mic {
+    width: 30px;
+    height: 30px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-fg-muted);
+    transition: background 0.15s, color 0.15s;
+  }
+  .loop-mic:hover { color: var(--color-fg); background: var(--color-bg-soft); }
+  .loop-mic[data-state='recording'] {
+    color: #fff;
+    background: rgb(239 68 68);
+    animation: loop-mic-pulse 1.2s ease-in-out infinite;
+  }
+  .loop-mic[data-state='busy'] { color: var(--color-accent); animation: loop-breathe 1s ease-in-out infinite; cursor: progress; }
+  @keyframes loop-mic-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgb(239 68 68 / 0.55); }
+    50% { box-shadow: 0 0 0 6px rgb(239 68 68 / 0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .loop-mic[data-state='recording'], .loop-mic[data-state='busy'] { animation: none; }
+  }
+
+  /* ---- Panel de grabación (se monta sobre la caja mientras dictás) ---- */
+  .loop-input { position: relative; }
+  .loop-rec {
+    position: absolute;
+    inset: -1px;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0 0.6rem 0 0.9rem;
+    border-radius: 16px;
+    color: #fff;
+    background:
+      radial-gradient(120% 140% at 0% 50%, rgb(255 255 255 / 0.10), transparent 55%),
+      linear-gradient(115deg, rgb(225 29 72), rgb(190 18 60) 55%, rgb(159 18 57));
+    box-shadow: 0 8px 28px rgb(190 18 60 / 0.35), inset 0 1px 0 rgb(255 255 255 / 0.18);
+    animation: loop-rec-in 0.16s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+  .loop-rec-mic {
+    flex-shrink: 0;
+    width: 34px;
+    height: 34px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgb(255 255 255 / 0.16);
+  }
+  .loop-rec[data-state='recording'] .loop-rec-mic { animation: loop-rec-ring 1.4s ease-out infinite; }
+  .loop-rec-wave { flex: 1; min-width: 0; height: 60%; max-height: 54px; }
+  .loop-rec-side { display: flex; flex-direction: column; align-items: flex-end; flex-shrink: 0; line-height: 1.2; }
+  .loop-rec-timer { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .loop-rec-status { font-size: 10px; opacity: 0.8; }
+  .loop-rec[data-state='busy'] .loop-rec-status { animation: loop-breathe 1s ease-in-out infinite; }
+  .loop-rec-btn {
+    flex-shrink: 0;
+    width: 30px;
+    height: 30px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgb(255 255 255 / 0.14);
+    transition: background 0.12s, transform 0.1s;
+  }
+  .loop-rec-btn:hover { background: rgb(255 255 255 / 0.26); }
+  .loop-rec-btn:active { transform: scale(0.94); }
+  .loop-rec-btn.is-ok { background: #fff; color: rgb(190 18 60); }
+  .loop-rec-btn.is-ok:hover { background: rgb(255 255 255 / 0.88); }
+  .loop-rec[data-state='busy'] .loop-rec-btn { opacity: 0.4; pointer-events: none; }
+  @keyframes loop-rec-in { from { opacity: 0; transform: scale(0.985); } to { opacity: 1; transform: none; } }
+  @keyframes loop-rec-ring {
+    0% { box-shadow: 0 0 0 0 rgb(255 255 255 / 0.45); }
+    100% { box-shadow: 0 0 0 12px rgb(255 255 255 / 0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .loop-rec, .loop-rec-mic, .loop-rec-status { animation: none !important; }
+  }
 
   /* ---- Avatar del agente en el hilo (sólo en el loop expandido) ---- */
   .loop-avatar { display: none; }

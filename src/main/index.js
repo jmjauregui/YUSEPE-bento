@@ -321,7 +321,11 @@ function configureSession() {
         ...details.responseHeaders,
         'Content-Security-Policy': [
           "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; " +
-          "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
+          // blob: en script-src/worker-src: el dictado (spec 040) carga el
+          // motor de voz como blob dentro de su worker. Sólo lo puede crear
+          // código que ya corre en Bento; revisar al endurecer la CSP.
+          "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; " +
+          "worker-src 'self' blob:; " +
           "style-src 'self' 'unsafe-inline'; " +
           "img-src 'self' data: blob: https:; " +
           "frame-src 'self' https: blob:; " +
