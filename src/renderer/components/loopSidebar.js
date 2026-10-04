@@ -748,6 +748,31 @@ function paintMarkReadBtn() {
   // El contador de no leídos viaja en la pastilla del título (047), no aquí.
 }
 
+/** Lo que hace el 🎤 (grabar / transcribir); lo arma ensureComposerBox. */
+let dictationToggle = null;
+
+/**
+ * ⇧⌘D: dictar en el loop. Abre el panel si está cerrado y hace lo mismo
+ * que tocar el 🎤: la primera vez empieza a grabar, la segunda transcribe.
+ */
+export async function toggleDictation() {
+  if (!state.profile) return;
+  if (!cwd()) {
+    toast.error('Este workspace no tiene carpeta asignada: el loop guarda sus mensajes en .ybento/loop/');
+    return;
+  }
+  if (!isOpen) openSidebar();
+  // La primera vez en la sesión la caja se arma al cargar los agentes:
+  // esperar esa carga en vez de decir "no hay agentes" antes de tiempo.
+  if (!dictationToggle) await refresh();
+  // La caja (y el 🎤) existen recién cuando hay agentes en el loop.
+  if (!dictationToggle || composerBoxEl?.classList.contains('hidden')) {
+    toast.info('Sumá una terminal al loop para poder dictarle.');
+    return;
+  }
+  dictationToggle();
+}
+
 export function isLoopSidebarOpen() {
   return isOpen;
 }
@@ -2235,7 +2260,7 @@ function ensureComposerBox() {
   // cronómetro, ✕ para descartar y ✓ para transcribir.
   const HINT = 'Enter envía · Shift+Enter, nueva línea · 🎤 dictar';
   const hintEl = h('p', { class: 'text-[10px] text-fg-subtle/70 text-center mt-1.5' }, HINT);
-  const micBtn = h('button', { class: 'loop-mic shrink-0', title: 'Dictar' }, svgIcon('mic', { size: 15 }));
+  const micBtn = h('button', { class: 'loop-mic shrink-0', title: 'Dictar (⇧⌘D)' }, svgIcon('mic', { size: 15 }));
 
   const waveCanvas = h('canvas', { class: 'loop-rec-wave' });
   const timerEl = h('span', { class: 'loop-rec-timer' }, '0:00');
@@ -2379,14 +2404,23 @@ function ensureComposerBox() {
     }
   }
 
-  micBtn.addEventListener('click', () => {
+  // Un solo camino para el 🎤 y para ⇧⌘D (menú → toggleDictation).
+  dictationToggle = () => {
     const st = micBtn.dataset.state;
     if (st === 'busy') return;
     if (st === 'recording') finishDictation();
     else beginDictation();
-  });
-  // Esc mientras graba descarta (el foco no está en la terminal acá).
-  recPanel.addEventListener('keydown', (e) => { if (e.key === 'Escape') cancelDictation(); });
+  };
+  micBtn.addEventListener('click', () => dictationToggle());
+  // Esc mientras graba descarta. A nivel documento porque con ⇧⌘D el foco
+  // puede no estar en el panel; pero no si el foco está en una terminal: ahí
+  // Esc es del agente (en Claude Code interrumpe).
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || micBtn.dataset.state !== 'recording') return;
+    if (document.activeElement?.closest('[data-kind="terminal"]')) return;
+    e.preventDefault();
+    cancelDictation();
+  }, true);
   micBtn.dataset.state = 'idle';
 
   const toolbar = h('div', { class: 'flex items-end justify-between gap-2 mt-1.5' }, [

@@ -641,6 +641,7 @@ Fuente: `setupMenu` en `src/main/index.js` y
 | `⌘/Ctrl + Shift + P` | Command Palette |
 | `⌘/Ctrl + K` | Agregar al espacio |
 | `⌘/Ctrl + Shift + L` | Abrir/cerrar el loop de agentes |
+| `⌘/Ctrl + Shift + D` | Dictar en el loop (otra vez: transcribir · Esc: descartar) |
 | `⌘/Ctrl + 1…9` | Ir al espacio 1…9 |
 | `⌘/Ctrl + T` | Nueva terminal |
 | `⌘/Ctrl + B` | Nueva calculadora |

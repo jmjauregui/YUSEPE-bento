@@ -121,6 +121,7 @@ function setupMenu(win) {
         { label: 'Nueva calculadora', accelerator: 'CmdOrCtrl+B', click: send('menu:new-calc') },
         { label: 'Configuración', accelerator: 'CmdOrCtrl+,', click: send('menu:settings') },
         { label: 'Loop de agentes', accelerator: 'CmdOrCtrl+Shift+L', click: send('menu:toggle-loop') },
+        { label: 'Dictar en el loop', accelerator: 'CmdOrCtrl+Shift+D', click: send('menu:dictate') },
         { type: 'separator' },
         { label: 'Atajos de teclado', accelerator: 'CmdOrCtrl+/', click: send('menu:shortcuts') },
       ],

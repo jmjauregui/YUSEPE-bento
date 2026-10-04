@@ -30,7 +30,7 @@ import { openCommandPalette } from './components/commandPalette.js';
 import { openQuickOpenFile } from './components/quickOpenFile.js';
 import { openShortcutsCheatsheet } from './components/shortcutsCheatsheet.js';
 import { initSnippetsSidebar, toggleSnippetsSidebar } from './components/snippetsSidebar.js';
-import { initLoopSidebar, toggleLoopSidebar } from './components/loopSidebar.js';
+import { initLoopSidebar, toggleLoopSidebar, toggleDictation } from './components/loopSidebar.js';
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -575,6 +575,7 @@ window.yusepe.menu.onNewTerminal(() => TileFactory.terminal(state.profile?.cwd))
 window.yusepe.menu.onNewCalc(() => TileFactory.calculator());
 window.yusepe.menu.onSettings(() => openSettings());
 window.yusepe.menu.onToggleLoop(() => toggleLoopSidebar());
+window.yusepe.menu.onDictate(() => toggleDictation());
 
 // Navegación por teclado del mosaico (Cmd+Alt+Flecha = foco,
 // Cmd+Alt+Shift+Flecha = mover). Ver components/bentoGrid.js.

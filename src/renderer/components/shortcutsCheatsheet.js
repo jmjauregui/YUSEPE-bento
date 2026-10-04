@@ -28,6 +28,7 @@ const GROUPS = [
       [[MOD, SHIFT, 'P'], 'Command Palette'],
       [[MOD, 'K'], 'Agregar al espacio'],
       [[MOD, SHIFT, 'L'], 'Loop de agentes'],
+      [[MOD, SHIFT, 'D'], 'Dictar en el loop (otra vez: transcribir)'],
       [[MOD, '1–9'], 'Ir al espacio N'],
     ],
   },

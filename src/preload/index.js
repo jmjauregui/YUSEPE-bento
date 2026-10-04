@@ -247,5 +247,6 @@ contextBridge.exposeInMainWorld('yusepe', {
     onNewCalc:         (handler) => on('menu:new-calc', handler),
     onSettings:        (handler) => on('menu:settings', handler),
     onToggleLoop:      (handler) => on('menu:toggle-loop', handler),
+    onDictate:         (handler) => on('menu:dictate', handler),
   },
 });
