@@ -68,6 +68,37 @@ function friendlyModelError(message, model) {
   return `El reconocimiento de voz falló: ${message}`;
 }
 
+/**
+ * Descarga y carga el modelo elegido, con progreso total (sumando los
+ * archivos del modelo). Se usa al aceptar la descarga la primera vez, antes
+ * de grabar.
+ * @param {{ onProgress?: (p: {loaded: number, total: number}) => void }} [opts]
+ */
+export function preloadModel({ onProgress: progress = () => {} } = {}) {
+  const { id: model } = currentModel();
+  const files = new Map(); // archivo -> { loaded, total }
+  onProgress = ({ file, loaded, total }) => {
+    files.set(file, { loaded, total });
+    let l = 0;
+    let t = 0;
+    for (const f of files.values()) { l += f.loaded || 0; t += f.total || 0; }
+    progress({ loaded: l, total: t });
+  };
+  const id = nextId++;
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject, model });
+    getWorker().postMessage({ type: 'load', id, model });
+  });
+}
+
+/** Corta una descarga en curso: el worker se descarta y se recrea a pedido. */
+export function cancelPreload() {
+  worker?.terminate();
+  worker = null;
+  for (const job of pending.values()) job.reject(Object.assign(new Error('cancelado'), { cancelled: true }));
+  pending.clear();
+}
+
 /* ---------- Micrófono ---------- */
 
 let recorder = null;

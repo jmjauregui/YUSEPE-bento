@@ -50,6 +50,18 @@ function getPipeline(model) {
 
 self.onmessage = async ({ data }) => {
   const { id, audio, model, language } = data;
+  // `load`: sólo descargar/cargar el modelo (la UI muestra el progreso antes
+  // de grabar, en vez de mezclar la descarga con la primera transcripción).
+  if (data.type === 'load') {
+    try {
+      await getPipeline(model);
+      self.postMessage({ type: 'ready', id });
+      self.postMessage({ type: 'result', id, text: '' });
+    } catch (err) {
+      self.postMessage({ type: 'error', id, message: String(err?.message || err) });
+    }
+    return;
+  }
   try {
     const asr = await getPipeline(model);
     self.postMessage({ type: 'ready', id });

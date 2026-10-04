@@ -37,7 +37,7 @@ import { pickTerminal } from './terminalPicker.js';
 import { labelFor } from './workspaceManager.js';
 import { thinkingPhrase, workingFor, thinkingLine } from '../core/loopThinking.js';
 import { openTerminalPeek } from './terminalPeek.js';
-import { cancelRecording, currentLevel, currentModel, startRecording, stopAndTranscribe } from '../core/dictation.js';
+import { cancelPreload, cancelRecording, currentLevel, currentModel, preloadModel, startRecording, stopAndTranscribe } from '../core/dictation.js';
 import { insertAtCursor } from '../core/dictationText.js';
 import QRCode from 'qrcode';
 import { renderMarkdown } from '../core/markdown.js';
@@ -2340,16 +2340,63 @@ function ensureComposerBox() {
     hintEl.textContent = HINT;
   }
 
+  // Descarga del modelo, la primera vez: al aceptar arranca enseguida, con
+  // una barra de progreso en la caja; al terminar se empieza a grabar solo
+  // (era lo que el usuario quería al tocar 🎤). Antes se grababa primero y el
+  // modelo se bajaba recién al transcribir, mezclado con "Transcribiendo…".
+  const dlBar = h('div', { class: 'loop-dl-bar' }, h('div', { class: 'loop-dl-fill' }));
+  const dlText = h('span', { class: 'loop-dl-text' }, '');
+  const dlPanel = h('div', { class: 'loop-dl hidden', 'aria-live': 'polite' }, [
+    h('span', { class: 'loop-rec-mic' }, svgIcon('mic', { size: 16 })),
+    h('div', { class: 'flex-1 min-w-0' }, [
+      h('div', { class: 'loop-dl-title' }, 'Descargando el modelo de voz…'),
+      dlBar,
+      dlText,
+    ]),
+    h('button', { class: 'loop-rec-btn', title: 'Cancelar la descarga', onClick: () => cancelPreload() },
+      svgIcon('close', { size: 14 })),
+  ]);
+  const MB = (b) => (b / 1_048_576).toFixed(0);
+
+  async function downloadModel(model) {
+    dlPanel.classList.remove('hidden');
+    dlBar.firstChild.style.width = '0%';
+    dlText.textContent = `Calidad "${model.label}" · ~${model.sizeMb} MB · una sola vez`;
+    micBtn.dataset.state = 'busy';
+    hintEl.textContent = 'Después de esto, el dictado funciona sin internet.';
+    try {
+      await preloadModel({
+        onProgress: ({ loaded, total }) => {
+          if (!total) return;
+          const pct = Math.min(100, Math.round((loaded / total) * 100));
+          dlBar.firstChild.style.width = `${pct}%`;
+          dlText.textContent = `${MB(loaded)} / ${MB(total)} MB · ${pct}%`;
+        },
+      });
+      dlBar.firstChild.style.width = '100%';
+      return true;
+    } catch (err) {
+      if (!err?.cancelled) toast.error(err?.message || String(err));
+      return false;
+    } finally {
+      dlPanel.classList.add('hidden');
+      micBtn.dataset.state = 'idle';
+      hintEl.textContent = HINT;
+    }
+  }
+
   async function beginDictation() {
     const model = currentModel();
     if (!model.downloaded) {
       const ok = await confirmModal({
         title: 'Dictado por voz',
-        body: `La primera vez se descarga el modelo de voz (~${model.sizeMb} MB, calidad "${model.label}"). `
-          + 'Después funciona sin internet y el audio nunca sale de tu máquina.',
-        confirmLabel: 'Descargar y dictar',
+        body: `Para dictar hace falta el modelo de voz (~${model.sizeMb} MB, calidad "${model.label}"). `
+          + 'Se descarga una sola vez; después funciona sin internet y el audio nunca sale de tu máquina.',
+        confirmLabel: 'Descargar',
       });
       if (!ok) return;
+      if (!(await downloadModel(model))) return;
+      toast.success('Modelo de voz listo. Ya podés hablar.');
     }
     try {
       await startRecording();
@@ -2427,7 +2474,7 @@ function ensureComposerBox() {
     pillsContainerEl, h('div', { class: 'flex items-center gap-1.5 shrink-0' }, [micBtn, composerSendBtn]),
   ]);
   composerBoxEl = h('div', {}, [
-    h('div', { class: 'loop-input' }, [composerInput, toolbar, recPanel]),
+    h('div', { class: 'loop-input' }, [composerInput, toolbar, recPanel, dlPanel]),
     hintEl,
   ]);
   composerEl.append(composerBoxEl);

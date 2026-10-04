@@ -980,6 +980,34 @@
     .loop-rec, .loop-rec-mic, .loop-rec-status { animation: none !important; }
   }
 
+  /* ---- Descarga del modelo de voz (primera vez) ---- */
+  .loop-dl {
+    position: absolute;
+    inset: -1px;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0 0.6rem 0 0.9rem;
+    border-radius: 16px;
+    background: var(--color-bg-elev);
+    border: 1px solid rgb(var(--color-accent-rgb) / 0.45);
+    animation: loop-rec-in 0.16s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+  .loop-dl .loop-rec-mic { color: var(--color-accent); background: rgb(var(--color-accent-rgb) / 0.14); }
+  .loop-dl .loop-rec-btn { background: var(--color-bg-soft); color: var(--color-fg-muted); }
+  .loop-dl .loop-rec-btn:hover { color: var(--color-fg); }
+  .loop-dl-title { font-size: 12px; font-weight: 500; color: var(--color-fg); }
+  .loop-dl-bar { height: 6px; margin: 0.35rem 0 0.25rem; border-radius: 999px; background: var(--color-bg-soft); overflow: hidden; }
+  .loop-dl-fill {
+    height: 100%;
+    width: 0;
+    border-radius: 999px;
+    background: linear-gradient(90deg, rgb(var(--color-accent-rgb) / 0.75), rgb(var(--color-accent-rgb)));
+    transition: width 0.25s ease;
+  }
+  .loop-dl-text { font-size: 10.5px; color: var(--color-fg-subtle); font-variant-numeric: tabular-nums; }
+
   /* ---- Loop en el teléfono (spec 041) ---- */
   .loop-remote-block { margin-top: 0.5rem; }
   .loop-remote-start {
